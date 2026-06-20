@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MW-Price-Checker | Matrix Warehouse Scanner</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="matrix-container">
+        <!-- Header -->
+        <header class="matrix-header">
+            <div class="header-content">
+                <h1 class="matrix-title">
+                    <span class="glitch" data-text="MW-PRICE-CHECKER">MW-PRICE-CHECKER</span>
+                </h1>
+                <p class="matrix-subtitle">MATRIX WAREHOUSE BARCODE SCANNER v1.0</p>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="matrix-main">
+            <div class="control-panel">
+                <!-- CSV Upload Section -->
+                <section class="control-section">
+                    <h2 class="section-title">📊 DATA MANAGEMENT</h2>
+                    <div class="control-group">
+                        <label for="csvFile" class="control-label">UPLOAD PRODUCT DATABASE</label>
+                        <div class="file-input-wrapper">
+                            <input type="file" id="csvFile" accept=".csv" class="file-input">
+                            <span class="file-input-label">SELECT CSV FILE</span>
+                        </div>
+                        <div class="data-status" id="dataStatus">
+                            <span class="status-icon">⚫</span>
+                            <span class="status-text">NO DATA LOADED</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Camera Controls Section -->
+                <section class="control-section">
+                    <h2 class="section-title">📷 CAMERA CONTROL</h2>
+                    <div class="control-group">
+                        <button id="cameraToggle" class="btn btn-primary">
+                            <span class="btn-icon">▶</span>
+                            ACTIVATE CAMERA
+                        </button>
+                        <div class="camera-status" id="cameraStatus">
+                            <span class="status-icon">⚫</span>
+                            <span class="status-text">CAMERA INACTIVE</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Scan Settings -->
+                <section class="control-section">
+                    <h2 class="section-title">⚙️ SCAN SETTINGS</h2>
+                    <div class="control-group">
+                        <label for="scanMode" class="control-label">DETECTION MODE</label>
+                        <select id="scanMode" class="control-select">
+                            <option value="auto">AUTO SCAN (RECOMMENDED)</option>
+                            <option value="manual">MANUAL INPUT</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label for="soundToggle" class="checkbox-label">
+                            <input type="checkbox" id="soundToggle" checked>
+                            <span>ENABLE SCAN BEEP</span>
+                        </label>
+                    </div>
+                </section>
+
+                <!-- Quick Actions -->
+                <section class="control-section">
+                    <h2 class="section-title">🎯 ACTIONS</h2>
+                    <div class="button-group">
+                        <button id="clearData" class="btn btn-secondary">CLEAR DATA</button>
+                        <button id="downloadTemplate" class="btn btn-secondary">CSV TEMPLATE</button>
+                    </div>
+                </section>
+            </div>
+
+            <!-- Camera and Display Area -->
+            <div class="scanner-display">
+                <!-- Video Element -->
+                <div class="video-container">
+                    <video id="cameraVideo" playsinline></video>
+                    <canvas id="scanCanvas" class="scan-canvas"></canvas>
+                    <div class="camera-overlay">
+                        <div class="scan-frame">
+                            <div class="corner corner-tl"></div>
+                            <div class="corner corner-tr"></div>
+                            <div class="corner corner-bl"></div>
+                            <div class="corner corner-br"></div>
+                            <div class="scan-line"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Manual Input Section -->
+                <div class="manual-input-container" id="manualInputContainer" style="display: none;">
+                    <h3 class="manual-title">MANUAL BARCODE INPUT</h3>
+                    <div class="input-group">
+                        <input 
+                            type="text" 
+                            id="manualBarcode" 
+                            placeholder="ENTER BARCODE..." 
+                            class="manual-input"
+                            autocomplete="off"
+                        >
+                        <button id="submitBarcode" class="btn btn-primary">SUBMIT</button>
+                    </div>
+                </div>
+
+                <!-- Results Display -->
+                <div class="results-panel">
+                    <h3 class="results-title">SCAN RESULTS</h3>
+                    <div id="resultsContainer" class="results-container">
+                        <div class="no-results">
+                            <span class="no-results-icon">⊙</span>
+                            <p>AWAITING SCAN...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Scan History -->
+        <aside class="matrix-sidebar">
+            <h2 class="sidebar-title">📝 SCAN HISTORY</h2>
+            <div id="scanHistory" class="scan-history-list">
+                <div class="history-empty">NO SCANS</div>
+            </div>
+            <button id="clearHistory" class="btn btn-secondary" style="width: 100%; margin-top: 10px;">
+                CLEAR HISTORY
+            </button>
+        </aside>
+    </div>
+
+    <!-- Loading Spinner -->
+    <div id="loadingSpinner" class="loading-spinner">
+        <div class="spinner-box">
+            <div class="spinner-inner"></div>
+        </div>
+        <p class="spinner-text">INITIALIZING...</p>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/quagga@0.12.1/dist/quagga.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
