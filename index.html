@@ -27,18 +27,20 @@
         <!-- Main Content -->
         <main class="matrix-main">
             <div class="control-panel">
-                <!-- CSV Upload Section -->
+                <!-- Quick Search Section -->
                 <section class="control-section">
-                    <h2 class="section-title">📊 DATA MANAGEMENT</h2>
+                    <h2 class="section-title">🔍 QUICK SEARCH</h2>
                     <div class="control-group">
-                        <label for="csvFile" class="control-label">UPLOAD PRODUCT DATABASE</label>
-                        <div class="file-input-wrapper">
-                            <input type="file" id="csvFile" accept=".csv" class="file-input">
-                            <span class="file-input-label">SELECT CSV FILE</span>
-                        </div>
-                        <div class="data-status" id="dataStatus">
-                            <span class="status-icon">⚫</span>
-                            <span class="status-text">NO DATA LOADED</span>
+                        <label for="quickSearch" class="control-label">BARCODE/SKU/ITEM#</label>
+                        <div class="input-group">
+                            <input 
+                                type="text" 
+                                id="quickSearch" 
+                                placeholder="ENTER CODE..." 
+                                class="manual-input"
+                                autocomplete="off"
+                            >
+                            <button id="quickSearchBtn" class="btn btn-primary">SEARCH</button>
                         </div>
                     </div>
                 </section>
@@ -62,13 +64,6 @@
                 <section class="control-section">
                     <h2 class="section-title">⚙️ SCAN SETTINGS</h2>
                     <div class="control-group">
-                        <label for="scanMode" class="control-label">DETECTION MODE</label>
-                        <select id="scanMode" class="control-select">
-                            <option value="auto">AUTO SCAN (RECOMMENDED)</option>
-                            <option value="manual">MANUAL INPUT</option>
-                        </select>
-                    </div>
-                    <div class="control-group">
                         <label for="soundToggle" class="checkbox-label">
                             <input type="checkbox" id="soundToggle" checked>
                             <span>ENABLE SCAN BEEP</span>
@@ -76,12 +71,21 @@
                     </div>
                 </section>
 
+                <!-- Data Status -->
+                <section class="control-section">
+                    <h2 class="section-title">📊 STATUS</h2>
+                    <div class="data-status" id="dataStatus">
+                        <span class="status-icon">🔗</span>
+                        <span class="status-text">LIVE API READY</span>
+                    </div>
+                </section>
+
                 <!-- Quick Actions -->
                 <section class="control-section">
                     <h2 class="section-title">🎯 ACTIONS</h2>
                     <div class="button-group">
-                        <button id="clearData" class="btn btn-secondary">CLEAR DATA</button>
-                        <button id="downloadTemplate" class="btn btn-secondary">CSV TEMPLATE</button>
+                        <button id="clearData" class="btn btn-secondary">CLEAR CACHE</button>
+                        <button id="clearHistory" class="btn btn-secondary">CLEAR HISTORY</button>
                     </div>
                 </section>
             </div>
@@ -90,7 +94,7 @@
             <div class="scanner-display">
                 <!-- Video Element -->
                 <div class="video-container">
-                    <video id="cameraVideo" playsinline></video>
+                    <video id="cameraVideo" playsinline autoplay muted></video>
                     <canvas id="scanCanvas" class="scan-canvas"></canvas>
                     <div class="camera-overlay">
                         <div class="scan-frame">
@@ -103,28 +107,13 @@
                     </div>
                 </div>
 
-                <!-- Manual Input Section -->
-                <div class="manual-input-container" id="manualInputContainer" style="display: none;">
-                    <h3 class="manual-title">MANUAL BARCODE INPUT</h3>
-                    <div class="input-group">
-                        <input 
-                            type="text" 
-                            id="manualBarcode" 
-                            placeholder="ENTER BARCODE..." 
-                            class="manual-input"
-                            autocomplete="off"
-                        >
-                        <button id="submitBarcode" class="btn btn-primary">SUBMIT</button>
-                    </div>
-                </div>
-
                 <!-- Results Display -->
                 <div class="results-panel">
-                    <h3 class="results-title">SCAN RESULTS</h3>
+                    <h3 class="results-title">PRODUCT DETAILS</h3>
                     <div id="resultsContainer" class="results-container">
                         <div class="no-results">
                             <span class="no-results-icon">⊙</span>
-                            <p>AWAITING SCAN...</p>
+                            <p>AWAITING SCAN OR SEARCH...</p>
                         </div>
                     </div>
                 </div>
@@ -137,9 +126,6 @@
             <div id="scanHistory" class="scan-history-list">
                 <div class="history-empty">NO SCANS</div>
             </div>
-            <button id="clearHistory" class="btn btn-secondary" style="width: 100%; margin-top: 10px;">
-                CLEAR HISTORY
-            </button>
         </aside>
     </div>
 
@@ -148,12 +134,11 @@
         <div class="spinner-box">
             <div class="spinner-inner"></div>
         </div>
-        <p class="spinner-text">INITIALIZING...</p>
+        <p class="spinner-text">PROCESSING...</p>
     </div>
 
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/quagga@0.12.1/dist/quagga.min.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
