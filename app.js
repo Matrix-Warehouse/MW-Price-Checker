@@ -173,7 +173,7 @@ class PriceChecker {
             this.updateDataStatus();
             this.elements.backupCsvLabel.textContent = 'SELECT CSV BACKUP FILE';
             this.elements.backupCsvMeta.textContent = 'CSV LOAD FAILED';
-            this.showNotification('✗ CSV LOAD FAILED - CHECK FILE FORMAT', 'error');
+            this.showNotification(`✗ CSV LOAD FAILED - ${error.message}`, 'error');
         }
 
         this.showLoading(false);
@@ -284,12 +284,12 @@ class PriceChecker {
         rows.forEach((row, index) => {
             const barcode = this.findColumnValue(row, ['barcode', 'barcodenumber', 'barcodeid', 'ean', 'upc']);
             const itemCode = this.findColumnValue(row, ['itemcode', 'itemnumber', 'itemno', 'item', 'code', 'productcode']);
-            const sku = this.findColumnValue(row, ['sku', 'stockcode', 'suppliercode', 'supplieritemcode']);
+            const sku = this.findColumnValue(row, ['sku', 'sku_', 'stockcode', 'suppliercode', 'supplieritemcode']);
             const title = this.findColumnValue(row, ['name', 'productname', 'itemname', 'description', 'itemdescription', 'desc']);
-            const description = this.findColumnValue(row, ['description', 'itemdescription', 'productdescription', 'desc', 'longdescription']);
-            const category = this.findColumnValue(row, ['category', 'department', 'group', 'productgroup']);
-            const stock = this.findColumnValue(row, ['stock', 'qty', 'quantity', 'available', 'onhand', 'stockonhand']);
-            const price = this.findColumnValue(row, ['price', 'sellingprice', 'retailprice', 'unitprice', 'sellprice', 'amount']);
+            const description = this.findColumnValue(row, ['description', 'itemdescription', 'productdescription', 'desc', 'longdescription', 'brand']);
+            const category = this.findColumnValue(row, ['category', 'categorydescription', 'department', 'group', 'productgroup']);
+            const stock = this.findColumnValue(row, ['stock', 'availablestock', 'qty', 'quantity', 'available', 'onhand', 'stockonhand']);
+            const price = this.findColumnValue(row, ['price', 'sellingprice', 'retailprice', 'unitprice', 'sellprice', 'amount', 'priceex']);
 
             if (!barcode && !itemCode && !sku && !title) {
                 return;
