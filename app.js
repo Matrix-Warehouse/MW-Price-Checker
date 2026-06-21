@@ -647,14 +647,21 @@ class PriceChecker {
     displayProduct(product) {
         console.log('📊 Displaying product:', product.title);
 
-        const imageHTML = product.image 
-            ? `<img src="${product.image}" alt="${product.title}" style="max-width: 100%; height: auto; margin-bottom: 15px; border-radius: 4px;">`
+        const safeImageUrl = this.sanitizeUrl(product.image);
+        const safeProductTitle = this.escapeHtml(product.title || 'N/A');
+        const safeBarcode = this.escapeHtml(product.barcode || 'N/A');
+        const safeStock = this.escapeHtml(product.stock || 'N/A');
+        const safeCategory = this.escapeHtml(product.category || 'N/A');
+
+        const imageHTML = safeImageUrl
+            ? `<img src="${safeImageUrl}" alt="${safeProductTitle}" style="max-width: 100%; height: auto; margin-bottom: 15px; border-radius: 4px;">`
             : '';
         const priceLabel = this.formatPrice(product.price);
         const sourceLabel = product.source === 'csv' ? 'CSV BACKUP' : 'LIVE API';
-        const linkHTML = product.url
+        const safeProductUrl = this.sanitizeUrl(product.url);
+        const linkHTML = safeProductUrl
             ? `<div style="margin-top: 15px;">
-                    <a href="${product.url}" target="_blank" class="btn btn-primary" style="display: inline-block; text-decoration: none;">VIEW ON WEBSITE</a>
+                    <a href="${safeProductUrl}" target="_blank" class="btn btn-primary" style="display: inline-block; text-decoration: none;">VIEW ON WEBSITE</a>
                </div>`
             : '';
 
@@ -663,11 +670,11 @@ class PriceChecker {
                 ${imageHTML}
                 <div class="result-field">
                     <span class="result-label">BARCODE/SKU:</span>
-                    <span class="result-value">${product.barcode || 'N/A'}</span>
+                    <span class="result-value">${safeBarcode}</span>
                 </div>
                 <div class="result-field">
                     <span class="result-label">PRODUCT:</span>
-                    <span class="result-value">${product.title}</span>
+                    <span class="result-value">${safeProductTitle}</span>
                 </div>
                 <div class="result-field">
                     <span class="result-label">PRICE:</span>
@@ -675,11 +682,11 @@ class PriceChecker {
                 </div>
                 <div class="result-field">
                     <span class="result-label">STOCK:</span>
-                    <span class="result-value">${product.stock}</span>
+                    <span class="result-value">${safeStock}</span>
                 </div>
                 <div class="result-field">
                     <span class="result-label">CATEGORY:</span>
-                    <span class="result-value">${product.category}</span>
+                    <span class="result-value">${safeCategory}</span>
                 </div>
                 <div class="result-field">
                     <span class="result-label">SOURCE:</span>
@@ -694,12 +701,13 @@ class PriceChecker {
 
     displayNotFound(barcode) {
         console.log('❌ Displaying not found for:', barcode);
+        const safeBarcode = this.escapeHtml(barcode);
 
         const resultHTML = `
             <div class="product-result error">
                 <div class="result-field">
                     <span class="result-label">SEARCH CODE:</span>
-                    <span class="result-value">${barcode}</span>
+                    <span class="result-value">${safeBarcode}</span>
                 </div>
                 <div class="result-field">
                     <span class="result-label">STATUS:</span>
@@ -738,9 +746,9 @@ class PriceChecker {
 
         const historyHTML = this.scanHistory.map((item) => `
             <div class="history-item" style="cursor: pointer;">
-                <div class="history-barcode">${item.barcode}</div>
-                <div style="color: var(--text-secondary); margin: 3px 0; font-size: 0.8rem;">${item.productName}</div>
-                <div class="history-time">${item.timestamp}</div>
+                <div class="history-barcode">${this.escapeHtml(item.barcode)}</div>
+                <div style="color: var(--text-secondary); margin: 3px 0; font-size: 0.8rem;">${this.escapeHtml(item.productName)}</div>
+                <div class="history-time">${this.escapeHtml(item.timestamp)}</div>
             </div>
         `).join('');
 
@@ -862,6 +870,31 @@ class PriceChecker {
             return `R${numeric.toFixed(2)}`;
         }
         return 'N/A';
+    }
+
+    escapeHtml(value) {
+        return String(value || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    sanitizeUrl(value) {
+        const raw = String(value || '').trim();
+        if (!raw) return '';
+
+        try {
+            const parsedUrl = new URL(raw, window.location.href);
+            if (parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:') {
+                return parsedUrl.href;
+            }
+        } catch (error) {
+            return '';
+        }
+
+        return '';
     }
 
     playBeep() {
