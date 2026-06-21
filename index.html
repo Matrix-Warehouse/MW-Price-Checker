@@ -45,6 +45,29 @@
                     </div>
                 </section>
 
+                <!-- Backup CSV Section -->
+                <section class="control-section">
+                    <h2 class="section-title">📁 BACKUP CSV</h2>
+                    <div class="control-group">
+                        <label for="backupCsvInput" class="control-label">FINCON EXPORT FILE</label>
+                        <div class="file-input-wrapper">
+                            <input
+                                type="file"
+                                id="backupCsvInput"
+                                class="file-input"
+                                accept=".csv,text/csv"
+                            >
+                            <label for="backupCsvInput" class="file-input-label" id="backupCsvLabel">
+                                SELECT CSV BACKUP FILE
+                            </label>
+                        </div>
+                        <div class="control-hint" id="backupCsvMeta">NO CSV BACKUP LOADED</div>
+                    </div>
+                    <div class="button-group button-group-single">
+                        <button id="clearBackupData" class="btn btn-secondary">REMOVE CSV BACKUP</button>
+                    </div>
+                </section>
+
                 <!-- Camera Controls Section -->
                 <section class="control-section">
                     <h2 class="section-title">📷 CAMERA CONTROL</h2>
