@@ -37,6 +37,7 @@ class PriceChecker {
         this.scanLockUntil = 0;
         this.isMobileDevice = /android|webos|iphone|ipad|ipod/i.test(navigator.userAgent || '');
         this.barcodeLibraryUrls = [
+            'quagga.min.js',
             'https://cdn.jsdelivr.net/npm/quagga@0.12.1/dist/quagga.min.js',
             'https://unpkg.com/quagga@0.12.1/dist/quagga.min.js',
             'https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js'
