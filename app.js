@@ -1,10 +1,12 @@
 /* ============================================
    MW-PRICE-CHECKER APPLICATION LOGIC
-   Live Product Lookup from MatrixWarehouse Website
+   Camera Barcode Scanning + Live Pricing
    ============================================ */
 
 class PriceChecker {
     constructor() {
+        console.log('🚀 PriceChecker Initializing...');
+        
         // State Management
         this.scanHistory = [];
         this.cameraActive = false;
@@ -12,12 +14,11 @@ class PriceChecker {
         this.maxHistoryItems = 20;
         this.lastScan = '';
         this.lastScanTime = 0;
-        this.isScanning = false;
-        this.products = []; // Cache of all products
-
-        // API Configuration
-        this.warehouseURL = 'https://www.matrixwarehouse.co.za';
+        this.products = [];
         this.productCache = new Map();
+
+        // Configuration
+        this.warehouseURL = 'https://www.matrixwarehouse.co.za';
 
         // DOM Elements
         this.elements = {
@@ -25,7 +26,6 @@ class PriceChecker {
             quickSearchBtn: document.getElementById('quickSearchBtn'),
             cameraToggle: document.getElementById('cameraToggle'),
             cameraVideo: document.getElementById('cameraVideo'),
-            scanCanvas: document.getElementById('scanCanvas'),
             soundToggle: document.getElementById('soundToggle'),
             resultsContainer: document.getElementById('resultsContainer'),
             dataStatus: document.getElementById('dataStatus'),
@@ -37,15 +37,16 @@ class PriceChecker {
             notificationContainer: null
         };
 
-        // Initialize
         this.init();
     }
 
     init() {
+        console.log('📍 Initializing components...');
         this.createNotificationContainer();
         this.attachEventListeners();
         this.restoreState();
         this.loadProducts();
+        console.log('✓ Initialization complete');
     }
 
     createNotificationContainer() {
@@ -59,83 +60,79 @@ class PriceChecker {
     }
 
     attachEventListeners() {
+        console.log('📌 Attaching event listeners...');
+        
         // Quick Search
-        this.elements.quickSearchBtn.addEventListener('click', () => this.processQuickSearch());
+        this.elements.quickSearchBtn.addEventListener('click', () => {
+            console.log('🔍 Search button clicked');
+            this.processQuickSearch();
+        });
         this.elements.quickSearch.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') this.processQuickSearch();
+            if (e.key === 'Enter') {
+                console.log('🔍 Enter pressed in search');
+                this.processQuickSearch();
+            }
         });
 
-        // Camera Control
-        this.elements.cameraToggle.addEventListener('click', () => this.toggleCamera());
+        // Camera
+        this.elements.cameraToggle.addEventListener('click', () => {
+            console.log('📷 Camera toggle clicked');
+            this.toggleCamera();
+        });
 
-        // Settings
+        // Sound
         this.elements.soundToggle.addEventListener('change', (e) => {
             this.soundEnabled = e.target.checked;
             this.saveState();
+            console.log('🔊 Sound:', this.soundEnabled ? 'ON' : 'OFF');
         });
 
-        // History & Data
+        // History & Cache
         this.elements.clearHistory.addEventListener('click', () => this.clearScanHistory());
         this.elements.clearData.addEventListener('click', () => this.clearCache());
+
+        console.log('✓ Event listeners attached');
     }
 
-    // =============== LOAD PRODUCTS FROM SHOPIFY JSON ===============
+    // =============== LOAD PRODUCTS ===============
 
     async loadProducts() {
+        console.log('📦 Loading products from Matrix Warehouse...');
         this.showLoading(true);
+
         try {
+            // Try products.json endpoint
+            console.log('🌐 Trying:', `${this.warehouseURL}/products.json`);
             const response = await fetch(`${this.warehouseURL}/products.json`, {
-                mode: 'cors',
-                headers: {
-                    'Accept': 'application/json'
-                }
+                method: 'GET',
+                headers: { 'Accept': 'application/json' },
+                mode: 'cors'
             });
 
             if (response.ok) {
                 const data = await response.json();
                 this.products = data.products || [];
-                this.updateDataStatus(true);
-                this.showNotification(`✓ LOADED ${this.products.length} PRODUCTS`, 'success');
-                console.log('Loaded products:', this.products.length);
-            } else {
-                this.loadProductsViaSearch();
-            }
-        } catch (error) {
-            console.error('Products.json error:', error);
-            this.loadProductsViaSearch();
-        }
-        this.showLoading(false);
-    }
-
-    async loadProductsViaSearch() {
-        try {
-            // Try to load products via search endpoint or collection
-            const response = await fetch(`${this.warehouseURL}/collections/all/products.json`, {
-                mode: 'cors',
-                headers: {
-                    'Accept': 'application/json'
-                }
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                this.products = data.products || [];
+                console.log(`✓ Loaded ${this.products.length} products`);
                 this.updateDataStatus(true);
                 this.showNotification(`✓ LOADED ${this.products.length} PRODUCTS`, 'success');
             } else {
-                this.updateDataStatus(false);
-                this.showNotification('⚠ OFFLINE MODE - Limited Functionality', 'info');
+                throw new Error(`Status ${response.status}`);
             }
         } catch (error) {
-            console.error('Search error:', error);
+            console.error('❌ API Error:', error);
             this.updateDataStatus(false);
+            this.showNotification('⚠ OFFLINE MODE - Search may be limited', 'info');
         }
+
+        this.showLoading(false);
     }
 
     // =============== QUICK SEARCH ===============
 
     processQuickSearch() {
         const input = this.elements.quickSearch.value.trim().toUpperCase();
+        console.log('🔍 Searching for:', input);
+
         if (input) {
             this.lookupProduct(input, false);
             this.elements.quickSearch.value = '';
@@ -155,9 +152,10 @@ class PriceChecker {
     }
 
     async startCamera() {
-        try {
-            this.showLoading(true);
+        console.log('📷 Starting camera...');
+        this.showLoading(true);
 
+        try {
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: {
                     facingMode: 'environment',
@@ -167,131 +165,140 @@ class PriceChecker {
                 audio: false
             });
 
+            console.log('✓ Camera stream acquired');
             this.elements.cameraVideo.srcObject = stream;
             this.cameraActive = true;
             this.updateCameraStatus(true);
             this.elements.cameraToggle.innerHTML = '<span class="btn-icon">⏹</span>STOP CAMERA';
 
-            this.showLoading(false);
-            this.showNotification('✓ CAMERA ACTIVATED - SCANNING...', 'success');
-
-            // Start barcode scanning
+            this.showNotification('✓ CAMERA ACTIVE - SCANNING...', 'success');
             this.startBarcodeScanning();
+
         } catch (error) {
-            this.showLoading(false);
-            this.showNotification('✗ CAMERA ACCESS DENIED', 'error');
-            console.error('Camera Error:', error);
+            console.error('❌ Camera Error:', error);
+            this.showNotification('✗ CAMERA ACCESS DENIED: ' + error.message, 'error');
         }
+
+        this.showLoading(false);
     }
 
     stopCamera() {
+        console.log('📷 Stopping camera...');
+        
         const stream = this.elements.cameraVideo.srcObject;
         if (stream) {
-            stream.getTracks().forEach(track => track.stop());
+            stream.getTracks().forEach(track => {
+                track.stop();
+                console.log('✓ Track stopped:', track.label);
+            });
         }
-        
-        // Stop Quagga
+
         if (window.Quagga) {
-            Quagga.stop();
+            try {
+                Quagga.stop();
+                console.log('✓ Quagga stopped');
+            } catch (e) {
+                console.warn('Quagga stop error:', e);
+            }
         }
-        
+
         this.cameraActive = false;
-        this.isScanning = false;
         this.updateCameraStatus(false);
         this.elements.cameraToggle.innerHTML = '<span class="btn-icon">▶</span>ACTIVATE CAMERA';
         this.showNotification('⊙ CAMERA DEACTIVATED', 'info');
     }
 
-    // =============== BARCODE SCANNING WITH QUAGGA ===============
+    // =============== BARCODE SCANNING ===============
 
     startBarcodeScanning() {
-        if (!this.cameraActive || !window.Quagga) {
-            console.warn('Quagga not available');
+        if (!this.cameraActive) {
+            console.warn('⚠ Camera not active');
             return;
         }
 
-        this.isScanning = true;
+        if (!window.Quagga) {
+            console.error('❌ Quagga library not loaded');
+            this.showNotification('✗ BARCODE LIBRARY NOT LOADED', 'error');
+            return;
+        }
+
+        console.log('🎯 Starting Quagga barcode scanning...');
         const self = this;
 
-        // Initialize Quagga
-        Quagga.init({
-            inputStream: {
-                name: "Live",
-                type: "LiveStream",
-                target: this.elements.cameraVideo,
-                constraints: {
-                    width: { min: 640 },
-                    height: { min: 480 },
-                    facingMode: "environment",
-                    aspectRatio: { min: 1, max: 100 }
-                }
-            },
-            decoder: {
-                readers: [
-                    "code_128_reader",
-                    "ean_reader",
-                    "ean_8_reader",
-                    "upc_reader",
-                    "upc_e_reader",
-                    "code_39_reader"
-                ],
-                debug: {
-                    showCanvas: false,
-                    showPatterns: false,
-                    showLines: false,
-                    showTiming: false
-                }
-            },
-            locator: {
-                halfSample: true,
-                patchSize: "medium"
-            },
-            numOfWorkers: 2,
-            frequency: 10
-        }, function(err) {
-            if (err) {
-                console.error('Quagga init error:', err);
-                self.showNotification('✗ CAMERA SCAN ERROR', 'error');
-                return;
-            }
-
-            Quagga.start();
-
-            // Handle detected barcodes
-            Quagga.onDetected((result) => {
-                if (result.codeResult && result.codeResult.code) {
-                    const code = result.codeResult.code;
-                    
-                    // Prevent rapid duplicate scans
-                    if (code !== self.lastScan || Date.now() - self.lastScanTime > 3000) {
-                        self.lastScan = code;
-                        self.lastScanTime = Date.now();
-                        
-                        console.log('Barcode detected:', code);
-                        self.lookupProduct(code, true);
+        try {
+            Quagga.init({
+                inputStream: {
+                    name: "Live",
+                    type: "LiveStream",
+                    target: this.elements.cameraVideo,
+                    constraints: {
+                        width: { min: 640 },
+                        height: { min: 480 },
+                        facingMode: "environment"
                     }
+                },
+                decoder: {
+                    readers: [
+                        "code_128_reader",
+                        "ean_reader",
+                        "ean_8_reader",
+                        "upc_reader",
+                        "upc_e_reader",
+                        "code_39_reader"
+                    ],
+                    debug: {
+                        showCanvas: false,
+                        showPatterns: false,
+                        showLines: false,
+                        showTiming: false
+                    }
+                },
+                locator: {
+                    halfSample: true,
+                    patchSize: "medium"
+                },
+                numOfWorkers: 2,
+                frequency: 10
+            }, function(err) {
+                if (err) {
+                    console.error('❌ Quagga init error:', err);
+                    self.showNotification('✗ SCAN ERROR: ' + err.message, 'error');
+                    return;
                 }
+
+                console.log('✓ Quagga initialized');
+                Quagga.start();
+                console.log('✓ Quagga started');
+
+                // Barcode detection
+                Quagga.onDetected((result) => {
+                    if (result && result.codeResult && result.codeResult.code) {
+                        const barcode = result.codeResult.code;
+                        console.log('📊 BARCODE DETECTED:', barcode);
+                        
+                        // Prevent duplicate scans
+                        if (barcode !== self.lastScan || Date.now() - self.lastScanTime > 3000) {
+                            self.lastScan = barcode;
+                            self.lastScanTime = Date.now();
+                            self.lookupProduct(barcode, true);
+                        }
+                    }
+                });
             });
-        });
+        } catch (error) {
+            console.error('❌ Quagga start error:', error);
+            this.showNotification('✗ SCAN ERROR: ' + error.message, 'error');
+        }
     }
 
     // =============== PRODUCT LOOKUP ===============
 
     lookupProduct(barcode, fromCamera = false) {
-        // Prevent duplicate scans
-        const now = Date.now();
-        if (
-            barcode === this.lastScan &&
-            now - this.lastScanTime < 2000
-        ) {
-            return;
-        }
+        console.log('🔎 Looking up product:', barcode);
 
-        this.lastScan = barcode;
-        this.lastScanTime = now;
-
-        // Check cache first
+        // Check cache
         if (this.productCache.has(barcode)) {
+            console.log('✓ Found in cache');
             const product = this.productCache.get(barcode);
             this.displayProduct(product);
             this.addToHistory(barcode, product.title);
@@ -299,15 +306,17 @@ class PriceChecker {
             return;
         }
 
-        // Search in local products
+        // Search in products
         const product = this.searchLocalProducts(barcode);
-        
+
         if (product) {
+            console.log('✓ Product found:', product.title);
             this.productCache.set(barcode, product);
             this.displayProduct(product);
             this.addToHistory(barcode, product.title);
             if (fromCamera) this.playBeep();
         } else {
+            console.log('❌ Product not found');
             this.displayNotFound(barcode);
             if (fromCamera) this.playError();
         }
@@ -315,24 +324,24 @@ class PriceChecker {
 
     searchLocalProducts(searchTerm) {
         const term = searchTerm.toLowerCase().trim();
-        
-        // Search in products array
+        console.log('🔍 Searching local products for:', term);
+
         for (const product of this.products) {
-            // Check barcode/SKU
+            // Check barcode
             if (product.barcode && product.barcode.toLowerCase() === term) {
                 return this.parseShopifyProduct(product);
             }
-            
-            // Check product handle (URL slug)
+
+            // Check handle
             if (product.handle && product.handle.toLowerCase().includes(term)) {
                 return this.parseShopifyProduct(product);
             }
-            
-            // Check product title
+
+            // Check title
             if (product.title && product.title.toLowerCase().includes(term)) {
                 return this.parseShopifyProduct(product);
             }
-            
+
             // Check variant SKU
             if (product.variants) {
                 for (const variant of product.variants) {
@@ -342,29 +351,32 @@ class PriceChecker {
                 }
             }
         }
-        
+
         return null;
     }
 
     parseShopifyProduct(product, variant = null) {
-        const selectedVariant = variant || (product.variants && product.variants[0]) || {};
-        
+        const v = variant || (product.variants && product.variants[0]) || {};
+
         return {
             id: product.id,
             title: product.title,
-            barcode: selectedVariant.barcode || product.barcode || '',
-            price: selectedVariant.price || '0.00',
-            stock: selectedVariant.inventory_quantity || 'N/A',
+            barcode: v.barcode || product.barcode || '',
+            price: v.price || '0.00',
+            stock: v.inventory_quantity || 'N/A',
             category: product.product_type || 'General',
-            image: product.featured_image?.src || product.image?.src || '',
-            description: product.body_html || '',
+            image: product.featured_image?.src || '',
             url: `${this.warehouseURL}/products/${product.handle}`
         };
     }
 
     displayProduct(product) {
-        const imageHTML = product.image ? `<img src="${product.image}" alt="${product.title}" style="max-width: 100%; height: auto; margin-bottom: 15px; border-radius: 4px;">` : '';
-        
+        console.log('📊 Displaying product:', product.title);
+
+        const imageHTML = product.image 
+            ? `<img src="${product.image}" alt="${product.title}" style="max-width: 100%; height: auto; margin-bottom: 15px; border-radius: 4px;">`
+            : '';
+
         const resultHTML = `
             <div class="product-result">
                 ${imageHTML}
@@ -398,6 +410,8 @@ class PriceChecker {
     }
 
     displayNotFound(barcode) {
+        console.log('❌ Displaying not found for:', barcode);
+
         const resultHTML = `
             <div class="product-result error">
                 <div class="result-field">
@@ -410,9 +424,8 @@ class PriceChecker {
                 </div>
                 <div style="margin-top: 10px; font-size: 0.85rem; color: var(--text-secondary);">
                     • Product not found in database<br>
-                    • Verify barcode/SKU is correct<br>
-                    • Try manual search or visit website<br>
-                    <a href="${this.warehouseURL}" target="_blank" style="color: var(--primary-red); text-decoration: underline;">Go to Matrix Warehouse →</a>
+                    • Verify code is correct<br>
+                    <a href="${this.warehouseURL}" target="_blank" style="color: var(--primary-red); text-decoration: underline;">Visit Matrix Warehouse →</a>
                 </div>
             </div>
         `;
@@ -420,7 +433,7 @@ class PriceChecker {
         this.elements.resultsContainer.innerHTML = resultHTML;
     }
 
-    // =============== HISTORY MANAGEMENT ===============
+    // =============== HISTORY ===============
 
     addToHistory(barcode, productName) {
         const timestamp = new Date().toLocaleTimeString();
@@ -450,7 +463,6 @@ class PriceChecker {
 
         this.elements.scanHistory.innerHTML = historyHTML;
 
-        // Add click handlers
         document.querySelectorAll('.history-item').forEach(item => {
             item.addEventListener('click', () => {
                 const barcode = item.querySelector('.history-barcode').textContent;
@@ -481,7 +493,7 @@ class PriceChecker {
         }
     }
 
-    // =============== STATUS & UI UPDATES ===============
+    // =============== UI UPDATES ===============
 
     updateDataStatus(loaded) {
         if (loaded) {
@@ -537,22 +549,20 @@ class PriceChecker {
 
         try {
             const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            const oscillator = audioContext.createOscillator();
-            const gainNode = audioContext.createGain();
+            const osc = audioContext.createOscillator();
+            const gain = audioContext.createGain();
 
-            oscillator.connect(gainNode);
-            gainNode.connect(audioContext.destination);
+            osc.connect(gain);
+            gain.connect(audioContext.destination);
 
-            oscillator.frequency.value = 800;
-            oscillator.type = 'sine';
+            osc.frequency.value = 800;
+            gain.gain.setValueAtTime(0.3, audioContext.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
 
-            gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
-
-            oscillator.start(audioContext.currentTime);
-            oscillator.stop(audioContext.currentTime + 0.1);
+            osc.start(audioContext.currentTime);
+            osc.stop(audioContext.currentTime + 0.1);
         } catch (e) {
-            console.warn('Audio not available');
+            console.warn('Audio error:', e);
         }
     }
 
@@ -561,26 +571,24 @@ class PriceChecker {
 
         try {
             const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            const oscillator = audioContext.createOscillator();
-            const gainNode = audioContext.createGain();
+            const osc = audioContext.createOscillator();
+            const gain = audioContext.createGain();
 
-            oscillator.connect(gainNode);
-            gainNode.connect(audioContext.destination);
+            osc.connect(gain);
+            gain.connect(audioContext.destination);
 
-            oscillator.frequency.value = 400;
-            oscillator.type = 'sine';
+            osc.frequency.value = 400;
+            gain.gain.setValueAtTime(0.2, audioContext.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
 
-            gainNode.gain.setValueAtTime(0.2, audioContext.currentTime);
-            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
-
-            oscillator.start(audioContext.currentTime);
-            oscillator.stop(audioContext.currentTime + 0.2);
+            osc.start(audioContext.currentTime);
+            osc.stop(audioContext.currentTime + 0.2);
         } catch (e) {
-            console.warn('Audio not available');
+            console.warn('Audio error:', e);
         }
     }
 
-    // =============== STATE MANAGEMENT ===============
+    // =============== STATE ===============
 
     saveState() {
         const state = {
@@ -597,23 +605,18 @@ class PriceChecker {
                 const state = JSON.parse(saved);
                 this.scanHistory = state.scanHistory || [];
                 this.soundEnabled = state.soundEnabled !== false;
-
                 this.elements.soundToggle.checked = this.soundEnabled;
                 this.updateHistoryDisplay();
             } catch (e) {
-                console.error('Failed to restore state:', e);
+                console.error('State restore error:', e);
             }
         }
     }
 }
 
-// Initialize app when DOM is ready
+// Start app
+console.log('✅ App script loaded');
 document.addEventListener('DOMContentLoaded', () => {
-    // Load Quagga library
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/quagga@0.3.2/dist/quagga.min.js';
-    script.onload = () => {
-        window.priceChecker = new PriceChecker();
-    };
-    document.head.appendChild(script);
+    console.log('✅ DOM ready - starting PriceChecker');
+    window.priceChecker = new PriceChecker();
 });
