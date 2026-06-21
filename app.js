@@ -13,6 +13,10 @@ class PriceChecker {
         this.soundEnabled = true;
         this.maxHistoryItems = 20;
 
+        // Duplicate scan prevention
+        this.lastScan = null;
+        this.lastScanTime = 0;
+
         // DOM Elements
         this.elements = {
             csvFile: document.getElementById('csvFile'),
@@ -397,18 +401,48 @@ class PriceChecker {
         }
     }
 
+    /**
+     * Lookup product by barcode with duplicate scan prevention
+     * Prevents rapid duplicate scans (within 2 seconds)
+     * Includes fallback search for case-insensitive matches
+     */
     lookupProduct(barcode, fromCamera = false) {
+        const now = Date.now();
+
+        // Prevent duplicate scans within 2 seconds
+        if (
+            barcode === this.lastScan &&
+            now - this.lastScanTime < 2000
+        ) {
+            return;
+        }
+
+        this.lastScan = barcode;
+        this.lastScanTime = now;
+
         // Normalize input for lookup
         const normalizedBarcode = barcode.toUpperCase();
-        
-        if (!this.products.has(normalizedBarcode)) {
+
+        // Direct lookup
+        let product = this.products.get(normalizedBarcode);
+
+        // Fallback: case-insensitive search if direct lookup fails
+        if (!product) {
+            for (const [key, value] of this.products.entries()) {
+                if (key.toUpperCase() === normalizedBarcode) {
+                    product = value;
+                    break;
+                }
+            }
+        }
+
+        if (!product) {
             this.displayNotFound(barcode);
             return;
         }
 
-        const product = this.products.get(normalizedBarcode);
         this.displayProduct(product);
-        this.addToHistory(normalizedBarcode, product.product_name);
+        this.addToHistory(product.barcode, product.product_name);
 
         if (fromCamera) {
             this.playBeep();
