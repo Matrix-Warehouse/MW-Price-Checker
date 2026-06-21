@@ -631,10 +631,61 @@ class PriceChecker {
             audio: false,
             video: {
                 facingMode: { ideal: 'environment' },
-                width: { ideal: this.isMobileDevice ? 1280 : 960 },
-                height: { ideal: this.isMobileDevice ? 720 : 540 }
+                width: { ideal: this.isMobileDevice ? 1920 : 1280 },
+                height: { ideal: this.isMobileDevice ? 1080 : 720 },
+                frameRate: { ideal: 30, max: 60 },
+                resizeMode: 'crop-and-scale'
             }
         };
+    }
+
+    async optimizeCameraTrack(track) {
+        if (!track || typeof track.applyConstraints !== 'function') {
+            return;
+        }
+
+        try {
+            const capabilities = typeof track.getCapabilities === 'function' ? track.getCapabilities() : {};
+            const advanced = [];
+
+            if (Array.isArray(capabilities.focusMode) && capabilities.focusMode.includes('continuous')) {
+                advanced.push({ focusMode: 'continuous' });
+            } else if (Array.isArray(capabilities.focusMode) && capabilities.focusMode.includes('continuous-picture')) {
+                advanced.push({ focusMode: 'continuous-picture' });
+            }
+
+            if (capabilities.zoom && typeof capabilities.zoom.min === 'number' && typeof capabilities.zoom.max === 'number') {
+                const preferredZoom = Math.min(capabilities.zoom.max, Math.max(capabilities.zoom.min, 1.5));
+                if (preferredZoom > capabilities.zoom.min) {
+                    advanced.push({ zoom: preferredZoom });
+                }
+            }
+
+            if (Array.isArray(capabilities.exposureMode) && capabilities.exposureMode.includes('continuous')) {
+                advanced.push({ exposureMode: 'continuous' });
+            }
+
+            if (advanced.length > 0) {
+                await track.applyConstraints({ advanced });
+            }
+        } catch (error) {
+            console.warn('Camera optimization warning:', error);
+        }
+    }
+
+    async optimizeScannerVideo(video) {
+        if (!video) {
+            return;
+        }
+
+        video.style.objectFit = 'cover';
+        video.style.objectPosition = 'center center';
+        video.style.width = '100%';
+        video.style.height = '100%';
+
+        const stream = video.srcObject;
+        const track = stream?.getVideoTracks?.()[0];
+        await this.optimizeCameraTrack(track);
     }
 
     isAutoStartBlock(error, permissionState = '') {
@@ -848,6 +899,7 @@ class PriceChecker {
                     this.setCameraButtonState('STOP CAMERA', '⏹');
                     this.showNotification('✓ CAMERA ACTIVE - POINT AT CODE TO SEARCH', 'success');
                     this.prepareScannerVideo();
+                    this.optimizeScannerVideo(this.elements.cameraViewport.querySelector('video'));
 
                     if (this.detectedHandler && typeof quagga.offDetected === 'function') {
                         quagga.offDetected(this.detectedHandler);
@@ -902,6 +954,9 @@ class PriceChecker {
         } catch (error) {
             console.warn('Native scanner video play warning:', error);
         }
+
+        await this.optimizeCameraTrack(stream.getVideoTracks()[0]);
+        await this.optimizeScannerVideo(video);
 
         try {
             if (typeof BarcodeDetectorClass === 'function') {
