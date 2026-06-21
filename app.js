@@ -31,7 +31,8 @@ class PriceChecker {
             clearData: document.getElementById('clearData'),
             downloadTemplate: document.getElementById('downloadTemplate'),
             manualInputContainer: document.getElementById('manualInputContainer'),
-            loadingSpinner: document.getElementById('loadingSpinner')
+            loadingSpinner: document.getElementById('loadingSpinner'),
+            notificationContainer: null
         };
 
         // Initialize
@@ -39,8 +40,19 @@ class PriceChecker {
     }
 
     init() {
+        this.createNotificationContainer();
         this.attachEventListeners();
         this.restoreState();
+    }
+
+    createNotificationContainer() {
+        if (!this.elements.notificationContainer) {
+            const container = document.createElement('div');
+            container.id = 'notificationContainer';
+            container.className = 'notification-container';
+            document.body.appendChild(container);
+            this.elements.notificationContainer = container;
+        }
     }
 
     attachEventListeners() {
@@ -81,56 +93,205 @@ class PriceChecker {
         reader.onload = (e) => {
             try {
                 const csv = e.target.result;
-                this.parseCSV(csv);
+                const result = this.parseCSV(csv);
                 this.showLoading(false);
-                this.updateDataStatus(true);
-                this.showNotification(`✓ LOADED ${this.products.size} PRODUCTS`, 'success');
+                
+                if (result.success) {
+                    this.updateDataStatus(true);
+                    this.showNotification(`✓ LOADED ${this.products.size} PRODUCTS`, 'success');
+                } else {
+                    this.showNotification(`✗ ${result.error}`, 'error');
+                    console.error('CSV Parse Error:', result.error);
+                }
             } catch (error) {
                 this.showLoading(false);
-                this.showNotification('✗ CSV PARSE ERROR', 'error');
+                this.showNotification(`✗ CSV ERROR: ${error.message}`, 'error');
                 console.error('CSV Error:', error);
             }
+        };
+        reader.onerror = () => {
+            this.showLoading(false);
+            this.showNotification('✗ FAILED TO READ FILE', 'error');
         };
         reader.readAsText(file);
     }
 
+    /**
+     * Parse CSV with flexible column mapping
+     * Supports multiple column name variations:
+     * - Barcode: barcode, item_number, item number, sku, product_code, code
+     * - Product: product_name, product name, description, item_description
+     * - Price: price, selling_price, selling price, unit_price, unit price
+     * - Stock: stock, quantity, qty, stock_qty
+     */
     parseCSV(csv) {
-        const lines = csv.trim().split('\n');
-        if (lines.length < 2) throw new Error('CSV must have header row');
-
-        const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
-        const barcodeIdx = headers.indexOf('barcode');
-        const productIdx = headers.indexOf('product_name');
-        const priceIdx = headers.indexOf('price');
-
-        if (barcodeIdx === -1 || productIdx === -1 || priceIdx === -1) {
-            throw new Error('Missing required columns: barcode, product_name, price');
+        if (!csv || csv.trim() === '') {
+            return { success: false, error: 'CSV file is empty' };
         }
 
+        const lines = csv.trim().split('\n').filter(line => line.trim());
+        
+        if (lines.length < 2) {
+            return { success: false, error: 'CSV must have header row and at least one data row' };
+        }
+
+        // Parse header - handle quoted values
+        const headerLine = lines[0];
+        const headers = this.parseCSVLine(headerLine).map(h => h.toLowerCase().trim());
+
+        if (headers.length === 0) {
+            return { success: false, error: 'CSV header is empty or malformed' };
+        }
+
+        // Define column mapping with priority order
+        const columnMappings = {
+            barcode: ['barcode', 'item_number', 'item number', 'sku', 'product_code', 'code'],
+            productName: ['product_name', 'product name', 'description', 'item_description', 'item description', 'name', 'product'],
+            price: ['price', 'selling_price', 'selling price', 'unit_price', 'unit price', 'cost'],
+            stock: ['stock', 'quantity', 'qty', 'stock_qty', 'stock qty', 'available', 'on_hand'],
+            category: ['category', 'product_category', 'type', 'classification'],
+            description: ['description', 'details', 'notes', 'comments']
+        };
+
+        // Find column indices using priority mapping
+        const findColumnIndex = (aliases) => {
+            for (const alias of aliases) {
+                const idx = headers.indexOf(alias);
+                if (idx !== -1) return idx;
+            }
+            return -1;
+        };
+
+        const barcodeIdx = findColumnIndex(columnMappings.barcode);
+        const productIdx = findColumnIndex(columnMappings.productName);
+        const priceIdx = findColumnIndex(columnMappings.price);
+
+        // Validation
+        if (barcodeIdx === -1) {
+            return { 
+                success: false, 
+                error: `Barcode column not found. Expected one of: ${columnMappings.barcode.join(', ')}. Found columns: ${headers.join(', ')}`
+            };
+        }
+        if (productIdx === -1) {
+            return { 
+                success: false, 
+                error: `Product name column not found. Expected one of: ${columnMappings.productName.join(', ')}. Found columns: ${headers.join(', ')}`
+            };
+        }
+        if (priceIdx === -1) {
+            return { 
+                success: false, 
+                error: `Price column not found. Expected one of: ${columnMappings.price.join(', ')}. Found columns: ${headers.join(', ')}`
+            };
+        }
+
+        const stockIdx = findColumnIndex(columnMappings.stock);
+        const categoryIdx = findColumnIndex(columnMappings.category);
+        const descriptionIdx = findColumnIndex(columnMappings.description);
+
         this.products.clear();
+        let successCount = 0;
+        let errorCount = 0;
 
+        // Parse data rows
         for (let i = 1; i < lines.length; i++) {
-            const line = lines[i].trim();
-            if (!line) continue;
+            try {
+                const line = lines[i].trim();
+                if (!line) continue;
 
-            const fields = line.split(',').map(f => f.trim());
-            const barcode = fields[barcodeIdx];
-            const productName = fields[productIdx];
-            const price = parseFloat(fields[priceIdx]);
+                const fields = this.parseCSVLine(line);
 
-            if (barcode && productName && !isNaN(price)) {
-                this.products.set(barcode, {
-                    barcode,
+                // Validate field count
+                if (fields.length < Math.max(barcodeIdx, productIdx, priceIdx) + 1) {
+                    errorCount++;
+                    continue;
+                }
+
+                const barcode = fields[barcodeIdx]?.trim();
+
+                if (!barcode) {
+                    errorCount++;
+                    continue;
+                }
+
+                const productName = fields[productIdx]?.trim() || 'Unknown Product';
+                
+                // Parse price - handle various currency formats
+                let price = '0.00';
+                if (priceIdx >= 0 && fields[priceIdx]) {
+                    const rawPrice = fields[priceIdx]
+                        .replace(/[R$€£¥,]/g, '')
+                        .trim();
+                    const parsedPrice = parseFloat(rawPrice);
+                    if (!isNaN(parsedPrice) && parsedPrice >= 0) {
+                        price = parsedPrice.toFixed(2);
+                    }
+                }
+
+                const stock = stockIdx >= 0 && fields[stockIdx] ? fields[stockIdx].trim() : 'N/A';
+                const category = categoryIdx >= 0 && fields[categoryIdx] ? fields[categoryIdx].trim() : 'General';
+                const description = descriptionIdx >= 0 && fields[descriptionIdx] ? fields[descriptionIdx].trim() : '';
+
+                // Normalize barcode to uppercase for consistent lookups
+                const normalizedBarcode = barcode.toUpperCase();
+
+                this.products.set(normalizedBarcode, {
+                    barcode: normalizedBarcode,
                     product_name: productName,
-                    price: price.toFixed(2),
-                    stock: fields[headers.indexOf('stock')] || 'N/A',
-                    category: fields[headers.indexOf('category')] || 'N/A',
-                    description: fields[headers.indexOf('description')] || ''
+                    price,
+                    stock,
+                    category,
+                    description
                 });
+
+                successCount++;
+            } catch (rowError) {
+                errorCount++;
+                console.warn(`Error parsing row ${i}:`, rowError);
             }
         }
 
+        if (successCount === 0) {
+            return { success: false, error: 'No valid products found in CSV' };
+        }
+
         this.saveState();
+        return { 
+            success: true, 
+            message: `Loaded ${successCount} products${errorCount > 0 ? ` (${errorCount} rows skipped)` : ''}` 
+        };
+    }
+
+    /**
+     * Parse a CSV line handling quoted values
+     */
+    parseCSVLine(line) {
+        const result = [];
+        let current = '';
+        let insideQuotes = false;
+
+        for (let i = 0; i < line.length; i++) {
+            const char = line[i];
+            const nextChar = line[i + 1];
+
+            if (char === '"') {
+                if (insideQuotes && nextChar === '"') {
+                    current += '"';
+                    i++; // Skip next quote
+                } else {
+                    insideQuotes = !insideQuotes;
+                }
+            } else if (char === ',' && !insideQuotes) {
+                result.push(current);
+                current = '';
+            } else {
+                current += char;
+            }
+        }
+
+        result.push(current);
+        return result;
     }
 
     // =============== CAMERA HANDLING ===============
@@ -229,22 +390,25 @@ class PriceChecker {
     // =============== PRODUCT LOOKUP ===============
 
     processManualBarcode() {
-        const barcode = this.elements.manualBarcode.value.trim().toUpperCase();
-        if (barcode) {
-            this.lookupProduct(barcode, false);
+        const input = this.elements.manualBarcode.value.trim().toUpperCase();
+        if (input) {
+            this.lookupProduct(input, false);
             this.elements.manualBarcode.value = '';
         }
     }
 
     lookupProduct(barcode, fromCamera = false) {
-        if (!this.products.has(barcode)) {
+        // Normalize input for lookup
+        const normalizedBarcode = barcode.toUpperCase();
+        
+        if (!this.products.has(normalizedBarcode)) {
             this.displayNotFound(barcode);
             return;
         }
 
-        const product = this.products.get(barcode);
+        const product = this.products.get(normalizedBarcode);
         this.displayProduct(product);
-        this.addToHistory(barcode, product.product_name);
+        this.addToHistory(normalizedBarcode, product.product_name);
 
         if (fromCamera) {
             this.playBeep();
@@ -288,7 +452,7 @@ class PriceChecker {
         const resultHTML = `
             <div class="product-result error">
                 <div class="result-field">
-                    <span class="result-label">BARCODE:</span>
+                    <span class="result-label">BARCODE/SKU/ITEM#:</span>
                     <span class="result-value">${barcode}</span>
                 </div>
                 <div class="result-field">
@@ -296,9 +460,9 @@ class PriceChecker {
                     <span class="result-value error">⚠ NOT FOUND IN DATABASE</span>
                 </div>
                 <div style="margin-top: 10px; font-size: 0.85rem; color: var(--text-secondary);">
-                    • Verify barcode is correct<br>
+                    • Verify barcode/SKU/item number is correct<br>
                     • Check product data is loaded<br>
-                    • Ensure barcode format matches CSV
+                    • Ensure value matches CSV data exactly
                 </div>
             </div>
         `;
@@ -442,8 +606,27 @@ class PriceChecker {
     }
 
     showNotification(message, type = 'info') {
-        // Create temporary notification (in a real app, use toast library)
+        // Log to console
         console.log(`[${type.toUpperCase()}] ${message}`);
+
+        // Show visual notification
+        const notification = document.createElement('div');
+        notification.className = `notification notification-${type}`;
+        notification.innerHTML = `
+            <div class="notification-content">
+                <span class="notification-message">${message}</span>
+                <button class="notification-close" onclick="this.parentElement.parentElement.remove()">×</button>
+            </div>
+        `;
+
+        this.elements.notificationContainer.appendChild(notification);
+
+        // Auto-remove after 5 seconds
+        setTimeout(() => {
+            if (notification.parentElement) {
+                notification.remove();
+            }
+        }, 5000);
     }
 
     playBeep() {
