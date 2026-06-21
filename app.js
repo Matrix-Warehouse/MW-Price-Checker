@@ -55,12 +55,12 @@ class PriceChecker {
         this.init();
     }
 
-    init() {
+    async init() {
         console.log('📍 Initializing components...');
         this.createNotificationContainer();
         this.attachEventListeners();
-        this.restoreState();
-        this.loadProducts();
+        await this.restoreState();
+        await this.loadProducts();
         console.log('✓ Initialization complete');
     }
 
@@ -1080,7 +1080,7 @@ class PriceChecker {
         }
     }
 
-    restoreState() {
+    async restoreState() {
         const saved = localStorage.getItem(this.storageKeys.state);
         let legacyBackupProducts = [];
 
@@ -1108,7 +1108,8 @@ class PriceChecker {
         }
 
         // Additionally load from IndexedDB (primary store for large datasets)
-        this.loadFromIndexedDB().then((idbProducts) => {
+        try {
+            const idbProducts = await this.loadFromIndexedDB();
             if (idbProducts.length > 0 && idbProducts.length > this.backupProducts.length) {
                 this.backupProducts = idbProducts;
                 this.backupDataAvailable = true;
@@ -1119,9 +1120,9 @@ class PriceChecker {
                     this.showNotification(`✓ RESTORED ${this.backupProducts.length} CSV BACKUP PRODUCTS`, 'info');
                 }
             }
-        }).catch((error) => {
+        } catch (error) {
             console.error('IndexedDB restore error:', error);
-        });
+        }
     }
 }
 
