@@ -135,7 +135,10 @@ class PriceChecker {
                 this.liveDataAvailable = this.products.length > 0;
                 console.log(`✓ Loaded ${this.products.length} products`);
                 this.updateDataStatus();
-                this.showNotification(`✓ LOADED ${this.products.length} PRODUCTS`, 'success');
+                const backupSummary = this.backupDataAvailable
+                    ? ` + ${this.backupProducts.length} CSV BACKUP PRODUCTS`
+                    : '';
+                this.showNotification(`✓ LOADED ${this.products.length} LIVE PRODUCTS${backupSummary}`, 'success');
             } else {
                 throw new Error(`Status ${response.status}`);
             }
@@ -144,7 +147,10 @@ class PriceChecker {
             this.products = [];
             this.liveDataAvailable = false;
             this.updateDataStatus();
-            this.showNotification('⚠ LIVE API OFFLINE - USE CSV BACKUP IF NEEDED', 'info');
+            const offlineMessage = this.backupDataAvailable
+                ? `⚠ LIVE API OFFLINE - ${this.backupProducts.length} CSV BACKUP PRODUCTS READY`
+                : '⚠ LIVE API OFFLINE - USE CSV BACKUP IF NEEDED';
+            this.showNotification(offlineMessage, 'info');
         }
 
         this.showLoading(false);
@@ -820,11 +826,11 @@ class PriceChecker {
         }
 
         if (hasLive && hasBackup) {
-            this.elements.dataStatus.querySelector('.status-text').textContent = '🔗 LIVE API + 📁 CSV BACKUP READY';
+            this.elements.dataStatus.querySelector('.status-text').textContent = `🔗 ${this.products.length} LIVE + 📁 ${this.backupProducts.length} CSV BACKUP READY`;
         } else if (hasLive) {
-            this.elements.dataStatus.querySelector('.status-text').textContent = '🔗 LIVE API READY';
+            this.elements.dataStatus.querySelector('.status-text').textContent = `🔗 ${this.products.length} LIVE PRODUCTS READY`;
         } else if (hasBackup) {
-            this.elements.dataStatus.querySelector('.status-text').textContent = '📁 CSV BACKUP READY';
+            this.elements.dataStatus.querySelector('.status-text').textContent = `📁 ${this.backupProducts.length} CSV BACKUP PRODUCTS READY`;
         } else {
             this.elements.dataStatus.querySelector('.status-text').textContent = '⚠ NO PRODUCT DATA';
         }
@@ -1032,7 +1038,7 @@ class PriceChecker {
         this.updateDataStatus();
 
         if (restoredBackup) {
-            this.showNotification(`✓ RESTORED CSV BACKUP (${this.backupProducts.length} PRODUCTS)`, 'info');
+            this.showNotification(`✓ RESTORED ${this.backupProducts.length} CSV BACKUP PRODUCTS`, 'info');
         }
     }
 }
