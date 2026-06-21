@@ -29,6 +29,10 @@ class PriceChecker {
         this.db = null;
         this.detectedHandler = null;
         this.cameraStartInProgress = false;
+        this.cameraAutoStartPending = false;
+        this.scanCooldownMs = 2500;
+        this.scanLockUntil = 0;
+        this.isMobileDevice = /android|webos|iphone|ipad|ipod/i.test(navigator.userAgent || '');
 
         // Configuration
         this.warehouseURL = 'https://www.matrixwarehouse.co.za';
@@ -51,6 +55,7 @@ class PriceChecker {
             clearHistory: document.getElementById('clearHistory'),
             clearData: document.getElementById('clearData'),
             loadingSpinner: document.getElementById('loadingSpinner'),
+            cameraHint: document.getElementById('cameraHint'),
             notificationContainer: null
         };
 
@@ -63,7 +68,7 @@ class PriceChecker {
         this.attachEventListeners();
         await this.restoreState();
         await this.loadProducts();
-        await this.startCamera();
+        await this.startCamera({ userInitiated: false });
         console.log('✓ Initialization complete');
     }
 
@@ -103,6 +108,8 @@ class PriceChecker {
             console.log('📷 Camera toggle clicked');
             this.toggleCamera();
         });
+
+        window.addEventListener('pagehide', () => this.stopCamera({ silent: true }));
 
         // Sound
         this.elements.soundToggle.addEventListener('change', (e) => {
@@ -440,11 +447,13 @@ class PriceChecker {
         if (this.cameraActive) {
             this.stopCamera();
         } else {
-            await this.startCamera();
+            await this.startCamera({ userInitiated: true });
         }
     }
 
-    async startCamera() {
+    async startCamera(options = {}) {
+        const { userInitiated = false } = options;
+
         if (this.cameraStartInProgress || this.cameraActive) {
             return;
         }
@@ -466,26 +475,44 @@ class PriceChecker {
                 throw new Error('Camera is not supported in this browser');
             }
 
-            this.clearCameraViewport();
-            this.elements.cameraToggle.disabled = true;
-            this.elements.cameraToggle.innerHTML = '<span class="btn-icon">⏳</span>STARTING CAMERA';
+            const permissionState = await this.getCameraPermissionState();
+            const hasVideoInput = await this.hasVideoInput();
+            if (!hasVideoInput && permissionState === 'granted') {
+                throw new Error('No camera device was found on this device.');
+            }
 
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    facingMode: { ideal: 'environment' }
-                },
-                audio: false
-            });
+            this.cameraAutoStartPending = false;
+            this.resetScannerSession();
+            this.setCameraButtonState('STARTING CAMERA', '⏳', true);
+            this.updateCameraStatus(false, 'STARTING CAMERA...');
+            this.updateCameraHint('ALLOW CAMERA ACCESS IF YOUR BROWSER PROMPTS YOU.');
+
+            const stream = await navigator.mediaDevices.getUserMedia(this.getPreferredCameraConstraints());
 
             stream.getTracks().forEach((track) => track.stop());
 
             await this.startBarcodeScanning();
         } catch (error) {
             this.cameraActive = false;
-            this.updateCameraStatus(false);
-            this.elements.cameraToggle.innerHTML = '<span class="btn-icon">▶</span>ACTIVATE CAMERA';
+            this.resetScannerSession();
             console.error('❌ Camera Error:', error);
-            this.showNotification(`✗ CAMERA ERROR: ${this.getCameraErrorMessage(error)}`, 'error');
+            const permissionState = await this.getCameraPermissionState();
+            const blockedAutoStart = !userInitiated && this.isAutoStartBlock(error, permissionState);
+
+            if (blockedAutoStart) {
+                this.cameraAutoStartPending = true;
+                this.updateCameraStatus(false, 'AUTO-START BLOCKED');
+                this.updateCameraHint('TAP ACTIVATE CAMERA ONCE TO START SCANNING ON THIS DEVICE.');
+                this.setCameraButtonState('TAP TO ENABLE CAMERA');
+                this.elements.cameraToggle.focus();
+                this.showNotification('⚠ AUTO-START BLOCKED - TAP ACTIVATE CAMERA TO ENABLE SCANNING', 'info');
+            } else {
+                this.cameraAutoStartPending = false;
+                this.updateCameraStatus(false);
+                this.updateCameraHint(this.getCameraRecoveryHint(error));
+                this.setCameraButtonState('ACTIVATE CAMERA');
+                this.showNotification(`✗ CAMERA ERROR: ${this.getCameraErrorMessage(error)}`, 'error');
+            }
         } finally {
             this.cameraStartInProgress = false;
             this.elements.cameraToggle.disabled = false;
@@ -493,35 +520,73 @@ class PriceChecker {
         }
     }
 
-    stopCamera() {
+    stopCamera(options = {}) {
+        const { silent = false } = options;
         console.log('📷 Stopping camera...');
-
-        if (window.Quagga) {
-            try {
-                if (this.detectedHandler && typeof Quagga.offDetected === 'function') {
-                    Quagga.offDetected(this.detectedHandler);
-                }
-                Quagga.stop();
-                console.log('✓ Quagga stopped');
-            } catch (e) {
-                console.warn('Quagga stop error:', e);
-            }
-        }
-
-        this.detectedHandler = null;
-        this.clearCameraViewport();
+        this.resetScannerSession();
         this.cameraActive = false;
         this.cameraStartInProgress = false;
+        this.cameraAutoStartPending = false;
+        this.lastScan = '';
+        this.lastScanTime = 0;
         this.updateCameraStatus(false);
-        this.elements.cameraToggle.disabled = false;
-        this.elements.cameraToggle.innerHTML = '<span class="btn-icon">▶</span>ACTIVATE CAMERA';
-        this.showNotification('⊙ CAMERA DEACTIVATED', 'info');
+        this.updateCameraHint('AUTO-STARTS ON LOAD WHERE ALLOWED. TAP ACTIVATE CAMERA IF PROMPTED.');
+        this.setCameraButtonState('ACTIVATE CAMERA');
+        if (!silent) {
+            this.showNotification('⊙ CAMERA DEACTIVATED', 'info');
+        }
     }
 
     clearCameraViewport() {
         if (this.elements.cameraViewport) {
             this.elements.cameraViewport.innerHTML = '';
         }
+    }
+
+    async getCameraPermissionState() {
+        if (!navigator.permissions || typeof navigator.permissions.query !== 'function') {
+            return '';
+        }
+
+        try {
+            const permissionStatus = await navigator.permissions.query({ name: 'camera' });
+            return permissionStatus.state || '';
+        } catch (error) {
+            return '';
+        }
+    }
+
+    async hasVideoInput() {
+        if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== 'function') {
+            return true;
+        }
+
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            return devices.some((device) => device.kind === 'videoinput');
+        } catch (error) {
+            console.warn('Camera enumeration error:', error);
+            return true;
+        }
+    }
+
+    getPreferredCameraConstraints() {
+        return {
+            audio: false,
+            video: {
+                facingMode: { ideal: 'environment' },
+                width: { ideal: this.isMobileDevice ? 1280 : 960 },
+                height: { ideal: this.isMobileDevice ? 720 : 540 }
+            }
+        };
+    }
+
+    isAutoStartBlock(error, permissionState = '') {
+        const name = String(error?.name || '');
+        return (
+            permissionState !== 'denied' &&
+            (name === 'NotAllowedError' || name === 'PermissionDeniedError')
+        );
     }
 
     getCameraErrorMessage(error) {
@@ -544,11 +609,79 @@ class PriceChecker {
             return 'The requested camera settings are not supported by this device.';
         }
 
+        if (name === 'AbortError') {
+            return 'Camera startup was interrupted. Please try again.';
+        }
+
         if (message) {
             return message;
         }
 
         return 'Unable to start camera.';
+    }
+
+    getCameraRecoveryHint(error) {
+        const name = String(error?.name || '');
+        const message = String(error?.message || '').toLowerCase();
+
+        if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+            return 'ALLOW CAMERA ACCESS IN YOUR BROWSER, THEN TAP ACTIVATE CAMERA.';
+        }
+
+        if (name === 'NotFoundError' || name === 'DevicesNotFoundError' || message.includes('no camera')) {
+            return 'CONNECT OR ENABLE A CAMERA, THEN TRY AGAIN.';
+        }
+
+        if (name === 'NotReadableError' || name === 'TrackStartError') {
+            return 'CLOSE OTHER APPS OR TABS USING THE CAMERA, THEN TRY AGAIN.';
+        }
+
+        if (name === 'OverconstrainedError' || name === 'ConstraintNotSatisfiedError') {
+            return 'THIS DEVICE NEEDS A DIFFERENT CAMERA MODE. TAP ACTIVATE CAMERA TO RETRY.';
+        }
+
+        if (message.includes('https') || message.includes('localhost')) {
+            return 'OPEN THIS APP OVER HTTPS OR LOCALHOST TO USE THE CAMERA.';
+        }
+
+        return 'TAP ACTIVATE CAMERA TO RETRY SCANNING.';
+    }
+
+    setCameraButtonState(label, icon = '▶', disabled = false) {
+        this.elements.cameraToggle.disabled = disabled;
+        this.elements.cameraToggle.innerHTML = `<span class="btn-icon">${icon}</span>${label}`;
+    }
+
+    updateCameraHint(message) {
+        if (this.elements.cameraHint) {
+            this.elements.cameraHint.textContent = message;
+        }
+    }
+
+    resetScannerSession() {
+        this.scanLockUntil = 0;
+
+        if (window.Quagga) {
+            try {
+                if (this.detectedHandler && typeof Quagga.offDetected === 'function') {
+                    Quagga.offDetected(this.detectedHandler);
+                }
+                Quagga.stop();
+            } catch (error) {
+                console.warn('Quagga stop error:', error);
+            }
+
+            try {
+                if (Quagga.CameraAccess && typeof Quagga.CameraAccess.release === 'function') {
+                    Quagga.CameraAccess.release();
+                }
+            } catch (error) {
+                console.warn('Quagga camera release error:', error);
+            }
+        }
+
+        this.detectedHandler = null;
+        this.clearCameraViewport();
     }
 
     // =============== BARCODE SCANNING ===============
@@ -557,19 +690,16 @@ class PriceChecker {
         if (!window.Quagga) {
             console.error('❌ Quagga library not loaded');
             this.cameraActive = false;
-            this.showNotification('✗ BARCODE LIBRARY NOT LOADED', 'error');
             return Promise.reject(new Error('Barcode library not loaded'));
         }
 
         if (!this.elements.cameraViewport) {
             console.error('❌ Scanner viewport not found');
             this.cameraActive = false;
-            this.showNotification('✗ SCANNER VIEWPORT NOT FOUND', 'error');
             return Promise.reject(new Error('Scanner viewport not found'));
         }
 
         console.log('🎯 Starting Quagga barcode scanning...');
-        const self = this;
 
         return new Promise((resolve, reject) => {
             try {
@@ -579,19 +709,22 @@ class PriceChecker {
                         type: 'LiveStream',
                         target: this.elements.cameraViewport,
                         constraints: {
-                            width: { min: 640 },
-                            height: { min: 480 },
+                            width: { ideal: this.isMobileDevice ? 1280 : 960 },
+                            height: { ideal: this.isMobileDevice ? 720 : 540 },
                             facingMode: { ideal: 'environment' }
                         }
                     },
                     decoder: {
                         readers: [
                             'code_128_reader',
+                            'code_93_reader',
                             'ean_reader',
                             'ean_8_reader',
                             'upc_reader',
                             'upc_e_reader',
-                            'code_39_reader'
+                            'code_39_reader',
+                            'codabar_reader',
+                            'i2of5_reader'
                         ],
                         debug: {
                             showCanvas: false,
@@ -602,56 +735,103 @@ class PriceChecker {
                     },
                     locator: {
                         halfSample: true,
-                        patchSize: 'medium'
+                        patchSize: this.isMobileDevice ? 'large' : 'medium'
                     },
-                    numOfWorkers: 2,
-                    frequency: 10
-                }, function(err) {
+                    locate: true,
+                    numOfWorkers: Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 3) - 1)),
+                    frequency: this.isMobileDevice ? 8 : 10
+                }, (err) => {
                     if (err) {
-                        console.error('❌ Quagga init error:', err);
-                        self.cameraActive = false;
-                        self.updateCameraStatus(false);
-                        self.elements.cameraToggle.innerHTML = '<span class="btn-icon">▶</span>ACTIVATE CAMERA';
-                        self.showNotification(`✗ SCAN ERROR: ${self.getCameraErrorMessage(err)}`, 'error');
                         reject(err);
                         return;
                     }
 
                     console.log('✓ Quagga initialized');
-                    Quagga.start();
+                    try {
+                        Quagga.start();
+                    } catch (startError) {
+                        reject(startError);
+                        return;
+                    }
                     console.log('✓ Quagga started');
-                    self.cameraActive = true;
-                    self.updateCameraStatus(true);
-                    self.elements.cameraToggle.innerHTML = '<span class="btn-icon">⏹</span>STOP CAMERA';
-                    self.showNotification('✓ CAMERA ACTIVE - SCANNING...', 'success');
+                    this.cameraActive = true;
+                    this.cameraAutoStartPending = false;
+                    this.lastScan = '';
+                    this.lastScanTime = 0;
+                    this.updateCameraStatus(true, 'CAMERA ACTIVE - SCANNING');
+                    this.updateCameraHint('POINT CAMERA AT A BARCODE OR A SKU/ITEM CODE PRINTED AS A BARCODE.');
+                    this.setCameraButtonState('STOP CAMERA', '⏹');
+                    this.showNotification('✓ CAMERA ACTIVE - POINT AT CODE TO SEARCH', 'success');
+                    this.prepareScannerVideo();
 
-                    if (self.detectedHandler && typeof Quagga.offDetected === 'function') {
-                        Quagga.offDetected(self.detectedHandler);
+                    if (this.detectedHandler && typeof Quagga.offDetected === 'function') {
+                        Quagga.offDetected(this.detectedHandler);
                     }
 
-                    self.detectedHandler = (result) => {
-                        if (result && result.codeResult && result.codeResult.code) {
-                            const barcode = result.codeResult.code;
-                            console.log('📊 BARCODE DETECTED:', barcode);
-                            
-                            // Prevent duplicate scans
-                            if (barcode !== self.lastScan || Date.now() - self.lastScanTime > 3000) {
-                                self.lastScan = barcode;
-                                self.lastScanTime = Date.now();
-                                self.lookupProduct(barcode, true);
-                            }
-                        }
-                    };
+                    this.detectedHandler = (result) => this.handleDetectedCode(result);
 
-                    Quagga.onDetected(self.detectedHandler);
+                    Quagga.onDetected(this.detectedHandler);
                     resolve();
                 });
             } catch (error) {
                 console.error('❌ Quagga start error:', error);
-                this.showNotification(`✗ SCAN ERROR: ${this.getCameraErrorMessage(error)}`, 'error');
                 reject(error);
             }
         });
+    }
+
+    prepareScannerVideo(attempt = 0) {
+        const video = this.elements.cameraViewport?.querySelector('video');
+        if (!video) {
+            if (attempt < 5) {
+                window.setTimeout(() => this.prepareScannerVideo(attempt + 1), 120);
+            }
+            return;
+        }
+
+        video.setAttribute('autoplay', 'true');
+        video.setAttribute('muted', 'true');
+        video.setAttribute('playsinline', 'true');
+        video.setAttribute('webkit-playsinline', 'true');
+        video.muted = true;
+        video.playsInline = true;
+
+        const playPromise = typeof video.play === 'function' ? video.play() : null;
+        if (playPromise && typeof playPromise.catch === 'function') {
+            playPromise.catch((error) => {
+                console.warn('Scanner video play warning:', error);
+            });
+        }
+    }
+
+    handleDetectedCode(result) {
+        const barcode = String(result?.codeResult?.code || '').trim();
+        const normalizedCode = this.normalizeCodeValue(barcode);
+
+        if (!normalizedCode || normalizedCode.length < 3) {
+            return;
+        }
+
+        const now = Date.now();
+        if (now < this.scanLockUntil) {
+            return;
+        }
+
+        if (normalizedCode === this.lastScan && now - this.lastScanTime < this.scanCooldownMs) {
+            return;
+        }
+
+        console.log('📊 BARCODE DETECTED:', barcode);
+        this.lastScan = normalizedCode;
+        this.lastScanTime = now;
+        this.scanLockUntil = now + this.scanCooldownMs;
+        this.lookupProduct(barcode, true);
+
+        window.setTimeout(() => {
+            if (this.scanLockUntil === now + this.scanCooldownMs) {
+                this.scanLockUntil = 0;
+            }
+        }, this.scanCooldownMs);
     }
 
     // =============== PRODUCT LOOKUP ===============
@@ -976,13 +1156,13 @@ class PriceChecker {
         }
     }
 
-    updateCameraStatus(active) {
+    updateCameraStatus(active, message = '') {
         if (active) {
             this.elements.cameraStatus.classList.add('active');
-            this.elements.cameraStatus.querySelector('.status-text').textContent = 'CAMERA ACTIVE';
+            this.elements.cameraStatus.querySelector('.status-text').textContent = message || 'CAMERA ACTIVE';
         } else {
             this.elements.cameraStatus.classList.remove('active');
-            this.elements.cameraStatus.querySelector('.status-text').textContent = 'CAMERA INACTIVE';
+            this.elements.cameraStatus.querySelector('.status-text').textContent = message || 'CAMERA INACTIVE';
         }
     }
 
