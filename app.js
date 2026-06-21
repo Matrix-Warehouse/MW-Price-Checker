@@ -15,6 +15,9 @@ class PriceChecker {
         this.lastScan = '';
         this.lastScanTime = 0;
         this.products = [];
+        this.backupProducts = [];
+        this.liveDataAvailable = false;
+        this.backupDataAvailable = false;
         this.productCache = new Map();
 
         // Configuration
@@ -24,6 +27,10 @@ class PriceChecker {
         this.elements = {
             quickSearch: document.getElementById('quickSearch'),
             quickSearchBtn: document.getElementById('quickSearchBtn'),
+            backupCsvInput: document.getElementById('backupCsvInput'),
+            backupCsvLabel: document.getElementById('backupCsvLabel'),
+            backupCsvMeta: document.getElementById('backupCsvMeta'),
+            clearBackupData: document.getElementById('clearBackupData'),
             cameraToggle: document.getElementById('cameraToggle'),
             cameraVideo: document.getElementById('cameraVideo'),
             soundToggle: document.getElementById('soundToggle'),
@@ -74,6 +81,12 @@ class PriceChecker {
             }
         });
 
+        // CSV Backup
+        this.elements.backupCsvInput.addEventListener('change', (event) => {
+            this.handleBackupFileUpload(event.target.files && event.target.files[0]);
+        });
+        this.elements.clearBackupData.addEventListener('click', () => this.clearBackupData());
+
         // Camera
         this.elements.cameraToggle.addEventListener('click', () => {
             console.log('📷 Camera toggle clicked');
@@ -112,19 +125,220 @@ class PriceChecker {
             if (response.ok) {
                 const data = await response.json();
                 this.products = data.products || [];
+                this.liveDataAvailable = this.products.length > 0;
                 console.log(`✓ Loaded ${this.products.length} products`);
-                this.updateDataStatus(true);
+                this.updateDataStatus();
                 this.showNotification(`✓ LOADED ${this.products.length} PRODUCTS`, 'success');
             } else {
                 throw new Error(`Status ${response.status}`);
             }
         } catch (error) {
             console.error('❌ API Error:', error);
-            this.updateDataStatus(false);
-            this.showNotification('⚠ OFFLINE MODE - Search may be limited', 'info');
+            this.products = [];
+            this.liveDataAvailable = false;
+            this.updateDataStatus();
+            this.showNotification('⚠ LIVE API OFFLINE - USE CSV BACKUP IF NEEDED', 'info');
         }
 
         this.showLoading(false);
+    }
+
+    // =============== CSV BACKUP ===============
+
+    async handleBackupFileUpload(file) {
+        if (!file) return;
+
+        this.showLoading(true);
+        this.productCache.clear();
+
+        try {
+            const csvText = await this.readFileAsText(file);
+            const rows = this.parseCSV(csvText);
+            this.backupProducts = this.normalizeBackupRows(rows);
+            this.backupDataAvailable = this.backupProducts.length > 0;
+            this.updateDataStatus();
+
+            this.elements.backupCsvLabel.textContent = `✓ ${file.name}`;
+            this.elements.backupCsvMeta.textContent = `${this.backupProducts.length} BACKUP PRODUCTS READY`;
+
+            if (this.backupDataAvailable) {
+                this.showNotification(`✓ CSV BACKUP LOADED (${this.backupProducts.length} PRODUCTS)`, 'success');
+            } else {
+                this.showNotification('⚠ CSV LOADED BUT NO SEARCHABLE PRODUCTS WERE FOUND', 'info');
+            }
+        } catch (error) {
+            console.error('❌ CSV backup load error:', error);
+            this.backupProducts = [];
+            this.backupDataAvailable = false;
+            this.updateDataStatus();
+            this.elements.backupCsvLabel.textContent = 'SELECT CSV BACKUP FILE';
+            this.elements.backupCsvMeta.textContent = 'CSV LOAD FAILED';
+            this.showNotification('✗ CSV LOAD FAILED - CHECK FILE FORMAT', 'error');
+        }
+
+        this.showLoading(false);
+    }
+
+    clearBackupData() {
+        if (this.backupProducts.length === 0) {
+            this.showNotification('⊙ NO CSV BACKUP TO REMOVE', 'info');
+            return;
+        }
+
+        if (confirm('REMOVE CSV BACKUP DATA?')) {
+            this.backupProducts = [];
+            this.backupDataAvailable = false;
+            this.elements.backupCsvInput.value = '';
+            this.elements.backupCsvLabel.textContent = 'SELECT CSV BACKUP FILE';
+            this.elements.backupCsvMeta.textContent = 'NO CSV BACKUP LOADED';
+            this.productCache.clear();
+            this.updateDataStatus();
+            this.showNotification('✓ CSV BACKUP REMOVED', 'success');
+        }
+    }
+
+    readFileAsText(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (event) => resolve(String(event.target?.result || ''));
+            reader.onerror = () => reject(new Error('Unable to read file'));
+            reader.readAsText(file);
+        });
+    }
+
+    parseCSV(csvText) {
+        const rows = [];
+        let currentField = '';
+        let currentRow = [];
+        let inQuotes = false;
+
+        const sanitized = String(csvText || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        const delimiter = this.detectDelimiter(sanitized);
+
+        for (let i = 0; i < sanitized.length; i += 1) {
+            const char = sanitized[i];
+            const nextChar = sanitized[i + 1];
+
+            if (char === '"') {
+                if (inQuotes && nextChar === '"') {
+                    currentField += '"';
+                    i += 1;
+                } else {
+                    inQuotes = !inQuotes;
+                }
+                continue;
+            }
+
+            if (!inQuotes && char === delimiter) {
+                currentRow.push(currentField.trim());
+                currentField = '';
+                continue;
+            }
+
+            if (!inQuotes && char === '\n') {
+                currentRow.push(currentField.trim());
+                if (currentRow.some((field) => field !== '')) {
+                    rows.push(currentRow);
+                }
+                currentRow = [];
+                currentField = '';
+                continue;
+            }
+
+            currentField += char;
+        }
+
+        if (currentField.length > 0 || currentRow.length > 0) {
+            currentRow.push(currentField.trim());
+            if (currentRow.some((field) => field !== '')) {
+                rows.push(currentRow);
+            }
+        }
+
+        if (rows.length < 2) {
+            return [];
+        }
+
+        const headers = rows[0];
+        return rows.slice(1).map((row) => this.buildCsvRowObject(headers, row));
+    }
+
+    detectDelimiter(csvText) {
+        const firstLine = csvText.split('\n').find((line) => line.trim().length > 0) || '';
+        const commaCount = (firstLine.match(/,/g) || []).length;
+        const semicolonCount = (firstLine.match(/;/g) || []).length;
+        return semicolonCount > commaCount ? ';' : ',';
+    }
+
+    buildCsvRowObject(headers, row) {
+        const record = {};
+        headers.forEach((header, index) => {
+            record[this.normalizeColumnName(header)] = String(row[index] || '').trim();
+        });
+        return record;
+    }
+
+    normalizeBackupRows(rows) {
+        const records = [];
+
+        rows.forEach((row, index) => {
+            const barcode = this.findColumnValue(row, ['barcode', 'barcodenumber', 'barcodeid', 'ean', 'upc']);
+            const itemCode = this.findColumnValue(row, ['itemcode', 'itemnumber', 'itemno', 'item', 'code', 'productcode']);
+            const sku = this.findColumnValue(row, ['sku', 'stockcode', 'suppliercode', 'supplieritemcode']);
+            const title = this.findColumnValue(row, ['name', 'productname', 'itemname', 'description', 'itemdescription', 'desc']);
+            const description = this.findColumnValue(row, ['description', 'itemdescription', 'productdescription', 'desc', 'longdescription']);
+            const category = this.findColumnValue(row, ['category', 'department', 'group', 'productgroup']);
+            const stock = this.findColumnValue(row, ['stock', 'qty', 'quantity', 'available', 'onhand', 'stockonhand']);
+            const price = this.findColumnValue(row, ['price', 'sellingprice', 'retailprice', 'unitprice', 'sellprice', 'amount']);
+
+            if (!barcode && !itemCode && !sku && !title) {
+                return;
+            }
+
+            records.push({
+                id: `csv-${index + 1}`,
+                source: 'csv',
+                title: title || itemCode || sku || barcode || 'Unknown Product',
+                description: description || '',
+                barcode: barcode || itemCode || sku || '',
+                itemCode: itemCode || '',
+                sku: sku || itemCode || '',
+                price: this.parsePrice(price),
+                stock: stock || 'N/A',
+                category: category || 'CSV Backup',
+                image: '',
+                url: ''
+            });
+        });
+
+        return records;
+    }
+
+    normalizeColumnName(columnName) {
+        return String(columnName || '')
+            .toLowerCase()
+            .replace(/[^a-z0-9]/g, '');
+    }
+
+    findColumnValue(row, aliases) {
+        const keys = Object.keys(row);
+        for (const alias of aliases) {
+            if (row[alias]) {
+                return row[alias];
+            }
+            const matchedKey = keys.find((key) => key.includes(alias));
+            if (matchedKey && row[matchedKey]) {
+                return row[matchedKey];
+            }
+        }
+        return '';
+    }
+
+    parsePrice(value) {
+        if (!value) return '';
+        const cleaned = String(value).replace(/[^0-9.-]/g, '');
+        const numeric = parseFloat(cleaned);
+        return Number.isFinite(numeric) ? numeric.toFixed(2) : '';
     }
 
     // =============== QUICK SEARCH ===============
@@ -294,58 +508,84 @@ class PriceChecker {
     // =============== PRODUCT LOOKUP ===============
 
     lookupProduct(barcode, fromCamera = false) {
-        console.log('🔎 Looking up product:', barcode);
+        const searchCode = String(barcode || '').trim();
+        const cacheKey = this.normalizeCodeValue(searchCode) || this.normalizeSearchValue(searchCode);
+        console.log('🔎 Looking up product:', searchCode);
+
+        if (!cacheKey) {
+            return;
+        }
 
         // Check cache
-        if (this.productCache.has(barcode)) {
+        if (this.productCache.has(cacheKey)) {
             console.log('✓ Found in cache');
-            const product = this.productCache.get(barcode);
+            const product = this.productCache.get(cacheKey);
             this.displayProduct(product);
-            this.addToHistory(barcode, product.title);
+            this.addToHistory(searchCode, product.title);
             if (fromCamera) this.playBeep();
             return;
         }
 
-        // Search in products
-        const product = this.searchLocalProducts(barcode);
+        // Search in live products first, then CSV backup products
+        const product = this.searchLocalProducts(searchCode);
 
         if (product) {
             console.log('✓ Product found:', product.title);
-            this.productCache.set(barcode, product);
+            this.productCache.set(cacheKey, product);
             this.displayProduct(product);
-            this.addToHistory(barcode, product.title);
+            this.addToHistory(searchCode, product.title);
             if (fromCamera) this.playBeep();
         } else {
             console.log('❌ Product not found');
-            this.displayNotFound(barcode);
+            this.displayNotFound(searchCode);
             if (fromCamera) this.playError();
         }
     }
 
     searchLocalProducts(searchTerm) {
-        const term = searchTerm.toLowerCase().trim();
+        const term = this.normalizeSearchValue(searchTerm);
+        const codeTerm = this.normalizeCodeValue(searchTerm);
         console.log('🔍 Searching local products for:', term);
 
+        if (!term) {
+            return null;
+        }
+
+        const liveResult = this.searchShopifyProducts(term, codeTerm);
+        if (liveResult) return liveResult;
+
+        return this.searchBackupProducts(term, codeTerm);
+    }
+
+    searchShopifyProducts(term, codeTerm) {
         for (const product of this.products) {
             // Check barcode
-            if (product.barcode && product.barcode.toLowerCase() === term) {
+            if (
+                this.normalizeCodeValue(product.barcode) === codeTerm ||
+                this.normalizeSearchValue(product.barcode) === term
+            ) {
                 return this.parseShopifyProduct(product);
             }
 
             // Check handle
-            if (product.handle && product.handle.toLowerCase().includes(term)) {
+            if (this.normalizeSearchValue(product.handle).includes(term)) {
                 return this.parseShopifyProduct(product);
             }
 
             // Check title
-            if (product.title && product.title.toLowerCase().includes(term)) {
+            if (this.normalizeSearchValue(product.title).includes(term)) {
                 return this.parseShopifyProduct(product);
             }
 
             // Check variant SKU
             if (product.variants) {
                 for (const variant of product.variants) {
-                    if (variant.sku && variant.sku.toLowerCase() === term) {
+                    if (
+                        this.normalizeCodeValue(variant.sku) === codeTerm ||
+                        this.normalizeCodeValue(variant.barcode) === codeTerm ||
+                        this.normalizeSearchValue(variant.sku) === term ||
+                        this.normalizeSearchValue(variant.barcode) === term
+                    ) {
                         return this.parseShopifyProduct(product, variant);
                     }
                 }
@@ -355,18 +595,54 @@ class PriceChecker {
         return null;
     }
 
+    searchBackupProducts(term, codeTerm) {
+        for (const product of this.backupProducts) {
+            const barcode = this.normalizeCodeValue(product.barcode);
+            const sku = this.normalizeCodeValue(product.sku);
+            const itemCode = this.normalizeCodeValue(product.itemCode);
+            const title = this.normalizeSearchValue(product.title);
+            const description = this.normalizeSearchValue(product.description);
+
+            if (
+                (codeTerm && (barcode === codeTerm || sku === codeTerm || itemCode === codeTerm)) ||
+                this.normalizeSearchValue(product.barcode) === term ||
+                this.normalizeSearchValue(product.sku) === term ||
+                this.normalizeSearchValue(product.itemCode) === term
+            ) {
+                return product;
+            }
+
+            if (title.includes(term) || description.includes(term)) {
+                return product;
+            }
+        }
+
+        return null;
+    }
+
+    normalizeSearchValue(value) {
+        return String(value || '').toLowerCase().trim();
+    }
+
+    normalizeCodeValue(value) {
+        return this.normalizeSearchValue(value).replace(/[^a-z0-9]/g, '');
+    }
+
     parseShopifyProduct(product, variant = null) {
         const v = variant || (product.variants && product.variants[0]) || {};
 
         return {
             id: product.id,
             title: product.title,
+            description: product.body_html || '',
             barcode: v.barcode || product.barcode || '',
+            sku: v.sku || '',
             price: v.price || '0.00',
             stock: v.inventory_quantity || 'N/A',
             category: product.product_type || 'General',
             image: product.featured_image?.src || '',
-            url: `${this.warehouseURL}/products/${product.handle}`
+            source: 'live',
+            url: product.handle ? `${this.warehouseURL}/products/${product.handle}` : ''
         };
     }
 
@@ -375,6 +651,13 @@ class PriceChecker {
 
         const imageHTML = product.image 
             ? `<img src="${product.image}" alt="${product.title}" style="max-width: 100%; height: auto; margin-bottom: 15px; border-radius: 4px;">`
+            : '';
+        const priceLabel = this.formatPrice(product.price);
+        const sourceLabel = product.source === 'csv' ? 'CSV BACKUP' : 'LIVE API';
+        const linkHTML = product.url
+            ? `<div style="margin-top: 15px;">
+                    <a href="${product.url}" target="_blank" class="btn btn-primary" style="display: inline-block; text-decoration: none;">VIEW ON WEBSITE</a>
+               </div>`
             : '';
 
         const resultHTML = `
@@ -390,7 +673,7 @@ class PriceChecker {
                 </div>
                 <div class="result-field">
                     <span class="result-label">PRICE:</span>
-                    <span class="result-value price">R${parseFloat(product.price).toFixed(2)}</span>
+                    <span class="result-value price">${priceLabel}</span>
                 </div>
                 <div class="result-field">
                     <span class="result-label">STOCK:</span>
@@ -400,9 +683,11 @@ class PriceChecker {
                     <span class="result-label">CATEGORY:</span>
                     <span class="result-value">${product.category}</span>
                 </div>
-                <div style="margin-top: 15px;">
-                    <a href="${product.url}" target="_blank" class="btn btn-primary" style="display: inline-block; text-decoration: none;">VIEW ON WEBSITE</a>
+                <div class="result-field">
+                    <span class="result-label">SOURCE:</span>
+                    <span class="result-value">${sourceLabel}</span>
                 </div>
+                ${linkHTML}
             </div>
         `;
 
@@ -423,7 +708,7 @@ class PriceChecker {
                     <span class="result-value error">⚠ NOT FOUND</span>
                 </div>
                 <div style="margin-top: 10px; font-size: 0.85rem; color: var(--text-secondary);">
-                    • Product not found in database<br>
+                    • Product not found in live or CSV backup data<br>
                     • Verify code is correct<br>
                     <a href="${this.warehouseURL}" target="_blank" style="color: var(--primary-red); text-decoration: underline;">Visit Matrix Warehouse →</a>
                 </div>
@@ -495,13 +780,24 @@ class PriceChecker {
 
     // =============== UI UPDATES ===============
 
-    updateDataStatus(loaded) {
-        if (loaded) {
+    updateDataStatus() {
+        const hasLive = this.liveDataAvailable;
+        const hasBackup = this.backupDataAvailable;
+
+        if (hasLive || hasBackup) {
             this.elements.dataStatus.classList.add('active');
-            this.elements.dataStatus.querySelector('.status-text').textContent = '🔗 LIVE API READY';
         } else {
             this.elements.dataStatus.classList.remove('active');
-            this.elements.dataStatus.querySelector('.status-text').textContent = 'OFFLINE MODE';
+        }
+
+        if (hasLive && hasBackup) {
+            this.elements.dataStatus.querySelector('.status-text').textContent = '🔗 LIVE API + 📁 CSV BACKUP READY';
+        } else if (hasLive) {
+            this.elements.dataStatus.querySelector('.status-text').textContent = '🔗 LIVE API READY';
+        } else if (hasBackup) {
+            this.elements.dataStatus.querySelector('.status-text').textContent = '📁 CSV BACKUP READY';
+        } else {
+            this.elements.dataStatus.querySelector('.status-text').textContent = '⚠ NO PRODUCT DATA';
         }
     }
 
@@ -542,6 +838,14 @@ class PriceChecker {
                 notification.remove();
             }
         }, 5000);
+    }
+
+    formatPrice(price) {
+        const numeric = parseFloat(String(price ?? '').replace(/[^0-9.-]/g, ''));
+        if (Number.isFinite(numeric)) {
+            return `R${numeric.toFixed(2)}`;
+        }
+        return 'N/A';
     }
 
     playBeep() {

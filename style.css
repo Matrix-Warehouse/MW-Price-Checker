@@ -205,6 +205,14 @@ body::before {
     margin-bottom: 0;
 }
 
+.control-hint {
+    margin-top: 8px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    opacity: 0.9;
+    word-break: break-word;
+}
+
 .control-label {
     display: block;
     font-size: 0.8rem;
@@ -333,6 +341,10 @@ body::before {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 10px;
+}
+
+.button-group-single {
+    grid-template-columns: 1fr;
 }
 
 .btn {
