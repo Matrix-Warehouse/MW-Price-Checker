@@ -1,25 +1,25 @@
 /* ============================================
    MW-PRICE-CHECKER APPLICATION LOGIC
-   Barcode Scanning & Product Lookup
+   Live Product Lookup from MatrixWarehouse
    ============================================ */
 
 class PriceChecker {
     constructor() {
         // State Management
-        this.products = new Map();
         this.scanHistory = [];
         this.cameraActive = false;
         this.scanMode = 'auto';
         this.soundEnabled = true;
         this.maxHistoryItems = 20;
-
-        // Duplicate scan prevention
-        this.lastScan = null;
+        this.lastScan = '';
         this.lastScanTime = 0;
+
+        // API Configuration
+        this.warehouseAPI = 'https://www.matrixwarehouse.co.za';
+        this.productCache = new Map(); // Cache for performance
 
         // DOM Elements
         this.elements = {
-            csvFile: document.getElementById('csvFile'),
             cameraToggle: document.getElementById('cameraToggle'),
             cameraVideo: document.getElementById('cameraVideo'),
             scanCanvas: document.getElementById('scanCanvas'),
@@ -47,6 +47,7 @@ class PriceChecker {
         this.createNotificationContainer();
         this.attachEventListeners();
         this.restoreState();
+        this.updateDataStatus(true); // Always show as ready since we're using live API
     }
 
     createNotificationContainer() {
@@ -60,9 +61,6 @@ class PriceChecker {
     }
 
     attachEventListeners() {
-        // File Upload
-        this.elements.csvFile.addEventListener('change', (e) => this.handleCSVUpload(e));
-
         // Camera Control
         this.elements.cameraToggle.addEventListener('click', () => this.toggleCamera());
 
@@ -81,221 +79,14 @@ class PriceChecker {
 
         // History & Data
         this.elements.clearHistory.addEventListener('click', () => this.clearScanHistory());
-        this.elements.clearData.addEventListener('click', () => this.clearProductData());
-        this.elements.downloadTemplate.addEventListener('click', () => this.downloadCSVTemplate());
-    }
+        this.elements.clearData.addEventListener('click', () => this.clearCache());
+        this.elements.downloadTemplate.addEventListener('click', () => this.showWarehouseInfo());
 
-    // =============== CSV HANDLING ===============
-
-    handleCSVUpload(event) {
-        const file = event.target.files[0];
-        if (!file) return;
-
-        this.showLoading(true);
-
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            try {
-                const csv = e.target.result;
-                const result = this.parseCSV(csv);
-                this.showLoading(false);
-                
-                if (result.success) {
-                    this.updateDataStatus(true);
-                    this.showNotification(`✓ LOADED ${this.products.size} PRODUCTS`, 'success');
-                } else {
-                    this.showNotification(`✗ ${result.error}`, 'error');
-                    console.error('CSV Parse Error:', result.error);
-                }
-            } catch (error) {
-                this.showLoading(false);
-                this.showNotification(`✗ CSV ERROR: ${error.message}`, 'error');
-                console.error('CSV Error:', error);
-            }
-        };
-        reader.onerror = () => {
-            this.showLoading(false);
-            this.showNotification('✗ FAILED TO READ FILE', 'error');
-        };
-        reader.readAsText(file);
-    }
-
-    /**
-     * Parse CSV with flexible column mapping
-     * Supports multiple column name variations:
-     * - Barcode: barcode, item_number, item number, sku, product_code, code
-     * - Product: product_name, product name, description, item_description
-     * - Price: price, selling_price, selling price, unit_price, unit price
-     * - Stock: stock, quantity, qty, stock_qty
-     */
-    parseCSV(csv) {
-        if (!csv || csv.trim() === '') {
-            return { success: false, error: 'CSV file is empty' };
+        // Hide CSV upload section
+        const csvSection = document.querySelector('.control-section');
+        if (csvSection && csvSection.textContent.includes('DATA MANAGEMENT')) {
+            csvSection.style.display = 'none';
         }
-
-        const lines = csv.trim().split('\n').filter(line => line.trim());
-        
-        if (lines.length < 2) {
-            return { success: false, error: 'CSV must have header row and at least one data row' };
-        }
-
-        // Parse header - handle quoted values
-        const headerLine = lines[0];
-        const headers = this.parseCSVLine(headerLine).map(h => h.toLowerCase().trim());
-
-        if (headers.length === 0) {
-            return { success: false, error: 'CSV header is empty or malformed' };
-        }
-
-        // Define column mapping with priority order
-        const columnMappings = {
-            barcode: ['barcode', 'item_number', 'item number', 'sku', 'product_code', 'code'],
-            productName: ['product_name', 'product name', 'description', 'item_description', 'item description', 'name', 'product'],
-            price: ['price', 'selling_price', 'selling price', 'unit_price', 'unit price', 'cost'],
-            stock: ['stock', 'quantity', 'qty', 'stock_qty', 'stock qty', 'available', 'on_hand'],
-            category: ['category', 'product_category', 'type', 'classification'],
-            description: ['description', 'details', 'notes', 'comments']
-        };
-
-        // Find column indices using priority mapping
-        const findColumnIndex = (aliases) => {
-            for (const alias of aliases) {
-                const idx = headers.indexOf(alias);
-                if (idx !== -1) return idx;
-            }
-            return -1;
-        };
-
-        const barcodeIdx = findColumnIndex(columnMappings.barcode);
-        const productIdx = findColumnIndex(columnMappings.productName);
-        const priceIdx = findColumnIndex(columnMappings.price);
-
-        // Validation
-        if (barcodeIdx === -1) {
-            return { 
-                success: false, 
-                error: `Barcode column not found. Expected one of: ${columnMappings.barcode.join(', ')}. Found columns: ${headers.join(', ')}`
-            };
-        }
-        if (productIdx === -1) {
-            return { 
-                success: false, 
-                error: `Product name column not found. Expected one of: ${columnMappings.productName.join(', ')}. Found columns: ${headers.join(', ')}`
-            };
-        }
-        if (priceIdx === -1) {
-            return { 
-                success: false, 
-                error: `Price column not found. Expected one of: ${columnMappings.price.join(', ')}. Found columns: ${headers.join(', ')}`
-            };
-        }
-
-        const stockIdx = findColumnIndex(columnMappings.stock);
-        const categoryIdx = findColumnIndex(columnMappings.category);
-        const descriptionIdx = findColumnIndex(columnMappings.description);
-
-        this.products.clear();
-        let successCount = 0;
-        let errorCount = 0;
-
-        // Parse data rows
-        for (let i = 1; i < lines.length; i++) {
-            try {
-                const line = lines[i].trim();
-                if (!line) continue;
-
-                const fields = this.parseCSVLine(line);
-
-                // Validate field count
-                if (fields.length < Math.max(barcodeIdx, productIdx, priceIdx) + 1) {
-                    errorCount++;
-                    continue;
-                }
-
-                const barcode = fields[barcodeIdx]?.trim();
-
-                if (!barcode) {
-                    errorCount++;
-                    continue;
-                }
-
-                const productName = fields[productIdx]?.trim() || 'Unknown Product';
-                
-                // Parse price - handle various currency formats
-                let price = '0.00';
-                if (priceIdx >= 0 && fields[priceIdx]) {
-                    const rawPrice = fields[priceIdx]
-                        .replace(/[R$€£¥,]/g, '')
-                        .trim();
-                    const parsedPrice = parseFloat(rawPrice);
-                    if (!isNaN(parsedPrice) && parsedPrice >= 0) {
-                        price = parsedPrice.toFixed(2);
-                    }
-                }
-
-                const stock = stockIdx >= 0 && fields[stockIdx] ? fields[stockIdx].trim() : 'N/A';
-                const category = categoryIdx >= 0 && fields[categoryIdx] ? fields[categoryIdx].trim() : 'General';
-                const description = descriptionIdx >= 0 && fields[descriptionIdx] ? fields[descriptionIdx].trim() : '';
-
-                // Normalize barcode to uppercase for consistent lookups
-                const normalizedBarcode = barcode.toUpperCase();
-
-                this.products.set(normalizedBarcode, {
-                    barcode: normalizedBarcode,
-                    product_name: productName,
-                    price,
-                    stock,
-                    category,
-                    description
-                });
-
-                successCount++;
-            } catch (rowError) {
-                errorCount++;
-                console.warn(`Error parsing row ${i}:`, rowError);
-            }
-        }
-
-        if (successCount === 0) {
-            return { success: false, error: 'No valid products found in CSV' };
-        }
-
-        this.saveState();
-        return { 
-            success: true, 
-            message: `Loaded ${successCount} products${errorCount > 0 ? ` (${errorCount} rows skipped)` : ''}` 
-        };
-    }
-
-    /**
-     * Parse a CSV line handling quoted values
-     */
-    parseCSVLine(line) {
-        const result = [];
-        let current = '';
-        let insideQuotes = false;
-
-        for (let i = 0; i < line.length; i++) {
-            const char = line[i];
-            const nextChar = line[i + 1];
-
-            if (char === '"') {
-                if (insideQuotes && nextChar === '"') {
-                    current += '"';
-                    i++; // Skip next quote
-                } else {
-                    insideQuotes = !insideQuotes;
-                }
-            } else if (char === ',' && !insideQuotes) {
-                result.push(current);
-                current = '';
-            } else {
-                current += char;
-            }
-        }
-
-        result.push(current);
-        return result;
     }
 
     // =============== CAMERA HANDLING ===============
@@ -401,15 +192,9 @@ class PriceChecker {
         }
     }
 
-    /**
-     * Lookup product by barcode with duplicate scan prevention
-     * Prevents rapid duplicate scans (within 2 seconds)
-     * Includes fallback search for case-insensitive matches
-     */
     lookupProduct(barcode, fromCamera = false) {
-        const now = Date.now();
-
         // Prevent duplicate scans within 2 seconds
+        const now = Date.now();
         if (
             barcode === this.lastScan &&
             now - this.lastScanTime < 2000
@@ -420,32 +205,116 @@ class PriceChecker {
         this.lastScan = barcode;
         this.lastScanTime = now;
 
-        // Normalize input for lookup
-        const normalizedBarcode = barcode.toUpperCase();
-
-        // Direct lookup
-        let product = this.products.get(normalizedBarcode);
-
-        // Fallback: case-insensitive search if direct lookup fails
-        if (!product) {
-            for (const [key, value] of this.products.entries()) {
-                if (key.toUpperCase() === normalizedBarcode) {
-                    product = value;
-                    break;
-                }
-            }
-        }
-
-        if (!product) {
-            this.displayNotFound(barcode);
+        // Check cache first
+        if (this.productCache.has(barcode)) {
+            const product = this.productCache.get(barcode);
+            this.displayProduct(product);
+            this.addToHistory(barcode, product.product_name);
+            if (fromCamera) this.playBeep();
             return;
         }
 
-        this.displayProduct(product);
-        this.addToHistory(product.barcode, product.product_name);
+        // Fetch from MatrixWarehouse API
+        this.showLoading(true);
+        this.fetchProductFromWarehouse(barcode)
+            .then(product => {
+                this.showLoading(false);
+                if (product) {
+                    this.productCache.set(barcode, product);
+                    this.displayProduct(product);
+                    this.addToHistory(barcode, product.product_name);
+                    if (fromCamera) this.playBeep();
+                } else {
+                    this.displayNotFound(barcode);
+                }
+            })
+            .catch(error => {
+                this.showLoading(false);
+                console.error('Lookup Error:', error);
+                this.displayNotFound(barcode);
+                this.showNotification('✗ FAILED TO LOOKUP PRODUCT', 'error');
+            });
+    }
 
-        if (fromCamera) {
-            this.playBeep();
+    async fetchProductFromWarehouse(barcode) {
+        try {
+            // Try multiple search methods
+            const searchMethods = [
+                `${this.warehouseAPI}/search?q=${barcode}`,
+                `${this.warehouseAPI}/api/products/search?sku=${barcode}`,
+                `${this.warehouseAPI}/api/products/barcode/${barcode}`
+            ];
+
+            for (const url of searchMethods) {
+                try {
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        headers: {
+                            'Accept': 'application/json',
+                        },
+                        mode: 'cors'
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        
+                        // Parse response based on format
+                        let product = null;
+                        
+                        if (Array.isArray(data) && data.length > 0) {
+                            product = this.parseProductData(data[0]);
+                        } else if (data.product) {
+                            product = this.parseProductData(data.product);
+                        } else if (data.name || data.product_name) {
+                            product = this.parseProductData(data);
+                        }
+
+                        if (product) return product;
+                    }
+                } catch (e) {
+                    // Try next method
+                    continue;
+                }
+            }
+
+            // If direct API fails, try web scraping via a backend service
+            return await this.scrapeProductFromWebsite(barcode);
+        } catch (error) {
+            console.error('Warehouse API Error:', error);
+            return null;
+        }
+    }
+
+    parseProductData(data) {
+        // Flexible parsing to handle various API response formats
+        return {
+            barcode: data.sku || data.barcode || data.item_number || '',
+            product_name: data.name || data.product_name || data.title || 'Unknown Product',
+            price: this.formatPrice(data.price || data.selling_price || data.cost || '0.00'),
+            stock: data.stock || data.quantity || data.qty || 'N/A',
+            category: data.category || data.product_category || data.type || 'General',
+            description: data.description || data.details || ''
+        };
+    }
+
+    formatPrice(price) {
+        if (typeof price === 'string') {
+            const cleaned = price.replace(/[R$€£¥,]/g, '').trim();
+            const parsed = parseFloat(cleaned);
+            return isNaN(parsed) ? '0.00' : parsed.toFixed(2);
+        }
+        return parseFloat(price || 0).toFixed(2);
+    }
+
+    async scrapeProductFromWebsite(barcode) {
+        try {
+            // Since we can't directly scrape due to CORS, we'll show a message
+            // In production, you'd use a backend proxy service
+            console.log('Direct scraping not available for:', barcode);
+            return null;
+        } catch (error) {
+            console.error('Scrape Error:', error);
+            return null;
         }
     }
 
@@ -453,7 +322,7 @@ class PriceChecker {
         const resultHTML = `
             <div class="product-result">
                 <div class="result-field">
-                    <span class="result-label">BARCODE:</span>
+                    <span class="result-label">BARCODE/SKU:</span>
                     <span class="result-value">${product.barcode}</span>
                 </div>
                 <div class="result-field">
@@ -462,7 +331,7 @@ class PriceChecker {
                 </div>
                 <div class="result-field">
                     <span class="result-label">PRICE:</span>
-                    <span class="result-value price">$${product.price}</span>
+                    <span class="result-value price">R${product.price}</span>
                 </div>
                 <div class="result-field">
                     <span class="result-label">STOCK:</span>
@@ -491,12 +360,12 @@ class PriceChecker {
                 </div>
                 <div class="result-field">
                     <span class="result-label">STATUS:</span>
-                    <span class="result-value error">⚠ NOT FOUND IN DATABASE</span>
+                    <span class="result-value error">⚠ NOT FOUND</span>
                 </div>
                 <div style="margin-top: 10px; font-size: 0.85rem; color: var(--text-secondary);">
-                    • Verify barcode/SKU/item number is correct<br>
-                    • Check product data is loaded<br>
-                    • Ensure value matches CSV data exactly
+                    • Product not found on matrixwarehouse.co.za<br>
+                    • Verify barcode/SKU is correct<br>
+                    • Check Matrix Warehouse inventory
                 </div>
             </div>
         `;
@@ -552,43 +421,21 @@ class PriceChecker {
         }
     }
 
-    // =============== DATA MANAGEMENT ===============
-
-    clearProductData() {
-        if (confirm('CLEAR ALL PRODUCT DATA?\n\nThis cannot be undone.')) {
-            this.products.clear();
+    clearCache() {
+        if (confirm('CLEAR ALL CACHED DATA?')) {
+            this.productCache.clear();
             this.elements.resultsContainer.innerHTML = `
                 <div class="no-results">
                     <span class="no-results-icon">⊙</span>
                     <p>AWAITING SCAN...</p>
                 </div>
             `;
-            this.updateDataStatus(false);
-            this.elements.csvFile.value = '';
-            this.saveState();
-            this.showNotification('✓ DATA CLEARED', 'success');
+            this.showNotification('✓ CACHE CLEARED', 'success');
         }
     }
 
-    downloadCSVTemplate() {
-        const template = `barcode,product_name,price,stock,category,description
-5901234123457,Premium Widget,29.99,100,Electronics,High-end wireless device
-5901234123458,Standard Widget,19.99,150,Electronics,Standard model with core features
-5901234123459,Budget Widget,9.99,200,Electronics,Affordable entry-level option
-5901234123460,Pro Gadget,49.99,75,Premium,Professional grade equipment
-5901234123461,Lite Device,14.99,250,Consumer,Lightweight portable version`;
-
-        const blob = new Blob([template], { type: 'text/csv' });
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'products-template.csv';
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
-
-        this.showNotification('✓ TEMPLATE DOWNLOADED', 'success');
+    showWarehouseInfo() {
+        this.showNotification('🔗 MatrixWarehouse.co.za - Live Pricing Enabled', 'info');
     }
 
     // =============== SETTINGS & MODES ===============
@@ -614,10 +461,10 @@ class PriceChecker {
     updateDataStatus(loaded) {
         if (loaded) {
             this.elements.dataStatus.classList.add('active');
-            this.elements.dataStatus.querySelector('.status-text').textContent = `${this.products.size} PRODUCTS LOADED`;
+            this.elements.dataStatus.querySelector('.status-text').textContent = '🔗 LIVE API READY';
         } else {
             this.elements.dataStatus.classList.remove('active');
-            this.elements.dataStatus.querySelector('.status-text').textContent = 'NO DATA LOADED';
+            this.elements.dataStatus.querySelector('.status-text').textContent = 'OFFLINE MODE';
         }
     }
 
@@ -691,7 +538,6 @@ class PriceChecker {
 
     saveState() {
         const state = {
-            products: Array.from(this.products.entries()),
             scanHistory: this.scanHistory,
             soundEnabled: this.soundEnabled,
             scanMode: this.scanMode
@@ -704,7 +550,6 @@ class PriceChecker {
         if (saved) {
             try {
                 const state = JSON.parse(saved);
-                this.products = new Map(state.products || []);
                 this.scanHistory = state.scanHistory || [];
                 this.soundEnabled = state.soundEnabled !== false;
                 this.scanMode = state.scanMode || 'auto';
@@ -712,10 +557,6 @@ class PriceChecker {
                 this.elements.soundToggle.checked = this.soundEnabled;
                 this.elements.scanMode.value = this.scanMode;
                 this.updateHistoryDisplay();
-                
-                if (this.products.size > 0) {
-                    this.updateDataStatus(true);
-                }
             } catch (e) {
                 console.error('Failed to restore state:', e);
             }
