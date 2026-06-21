@@ -13,6 +13,7 @@ class PriceChecker {
         this.maxHistoryItems = 20;
         this.lastScan = '';
         this.lastScanTime = 0;
+        this.isDecoding = false; // Prevent multiple simultaneous decodes
 
         // API Configuration
         this.warehouseAPI = 'https://www.matrixwarehouse.co.za';
@@ -114,6 +115,7 @@ class PriceChecker {
 
             this.elements.cameraVideo.srcObject = stream;
             this.cameraActive = true;
+            this.isDecoding = false;
             this.updateCameraStatus(true);
             this.elements.cameraToggle.innerHTML = '<span class="btn-icon">⏹</span>STOP CAMERA';
 
@@ -137,6 +139,7 @@ class PriceChecker {
             stream.getTracks().forEach(track => track.stop());
         }
         this.cameraActive = false;
+        this.isDecoding = false;
         this.updateCameraStatus(false);
         this.elements.cameraToggle.innerHTML = '<span class="btn-icon">▶</span>ACTIVATE CAMERA';
         this.showNotification('⊙ CAMERA DEACTIVATED', 'info');
@@ -150,31 +153,47 @@ class PriceChecker {
         const canvas = this.elements.scanCanvas;
         const ctx = canvas.getContext('2d');
         const video = this.elements.cameraVideo;
+        const self = this;
 
         const scan = () => {
             if (!this.cameraActive) return;
 
-            // Draw video frame to canvas
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            ctx.drawImage(video, 0, 0);
+            // Only process every 3rd frame to reduce CPU load and prevent freezing
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                // Draw video frame to canvas
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                ctx.drawImage(video, 0, 0);
 
-            // Try to detect barcode using Quagga
-            Quagga.decodeSingle({
-                src: canvas.toDataURL(),
-                numOfWorkers: 0,
-                inputStream: {
-                    size: 800
-                },
-                decoder: {
-                    readers: ['ean_reader', 'ean_8_reader', 'code_128_reader', 'code_39_reader', 'upc_reader']
+                // Only attempt decode if not currently decoding
+                if (!this.isDecoding) {
+                    this.isDecoding = true;
+
+                    try {
+                        // Try to detect barcode using Quagga
+                        Quagga.decodeSingle({
+                            src: canvas.toDataURL(),
+                            numOfWorkers: 0,
+                            inputStream: {
+                                size: 800
+                            },
+                            decoder: {
+                                readers: ['ean_reader', 'ean_8_reader', 'code_128_reader', 'code_39_reader', 'upc_reader']
+                            }
+                        }, (result) => {
+                            this.isDecoding = false;
+                            
+                            if (result && result.codeResult) {
+                                const barcode = result.codeResult.code;
+                                this.lookupProduct(barcode, true);
+                            }
+                        });
+                    } catch (e) {
+                        this.isDecoding = false;
+                        console.warn('Decode error:', e);
+                    }
                 }
-            }, (result) => {
-                if (result && result.codeResult) {
-                    const barcode = result.codeResult.code;
-                    this.lookupProduct(barcode, true);
-                }
-            });
+            }
 
             requestAnimationFrame(scan);
         };
