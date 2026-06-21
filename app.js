@@ -21,6 +21,10 @@ class PriceChecker {
         this.liveDataAvailable = false;
         this.backupDataAvailable = false;
         this.backupPersistenceWarningShown = false;
+        this.storageKeys = {
+            state: 'priceCheckerState',
+            backupProducts: 'priceCheckerBackupProducts'
+        };
         this.productCache = new Map();
 
         // Configuration
@@ -163,6 +167,7 @@ class PriceChecker {
             this.backupCsvSavedAt = new Date().toISOString();
             this.backupDataAvailable = this.backupProducts.length > 0;
             this.productCache.clear();
+            this.saveBackupProductsState();
             this.updateDataStatus();
             this.updateBackupCsvUI();
             this.saveState();
@@ -947,12 +952,11 @@ class PriceChecker {
         const state = {
             scanHistory: this.scanHistory,
             soundEnabled: this.soundEnabled,
-            backupProducts: this.backupProducts,
             backupCsvFileName: this.backupCsvFileName,
             backupCsvSavedAt: this.backupCsvSavedAt
         };
         try {
-            localStorage.setItem('priceCheckerState', JSON.stringify(state));
+            localStorage.setItem(this.storageKeys.state, JSON.stringify(state));
         } catch (error) {
             console.error('State save error:', error);
             if (
@@ -965,24 +969,70 @@ class PriceChecker {
         }
     }
 
+    saveBackupProductsState() {
+        try {
+            localStorage.setItem(this.storageKeys.backupProducts, JSON.stringify(this.backupProducts));
+        } catch (error) {
+            console.error('Backup state save error:', error);
+            if (
+                !this.backupPersistenceWarningShown &&
+                String(error?.name || '').toLowerCase().includes('quota')
+            ) {
+                this.backupPersistenceWarningShown = true;
+                this.showNotification('⚠ STORAGE FULL - CSV BACKUP CANNOT BE SAVED FOR PAGE REFRESH', 'info');
+            }
+        }
+    }
+
+    restoreBackupProductsState(legacyBackupProducts = []) {
+        const savedBackupProducts = localStorage.getItem(this.storageKeys.backupProducts);
+        if (!savedBackupProducts) {
+            this.backupProducts = Array.isArray(legacyBackupProducts) ? legacyBackupProducts : [];
+            this.backupDataAvailable = this.backupProducts.length > 0;
+            if (this.backupDataAvailable) {
+                this.saveBackupProductsState();
+            }
+            return this.backupProducts.length > 0;
+        }
+
+        try {
+            const parsedBackupProducts = JSON.parse(savedBackupProducts);
+            this.backupProducts = Array.isArray(parsedBackupProducts) ? parsedBackupProducts : [];
+            this.backupDataAvailable = this.backupProducts.length > 0;
+            return this.backupProducts.length > 0;
+        } catch (error) {
+            console.error('Backup state restore error:', error);
+            this.backupProducts = Array.isArray(legacyBackupProducts) ? legacyBackupProducts : [];
+            this.backupDataAvailable = this.backupProducts.length > 0;
+            return this.backupProducts.length > 0;
+        }
+    }
+
     restoreState() {
-        const saved = localStorage.getItem('priceCheckerState');
+        const saved = localStorage.getItem(this.storageKeys.state);
+        let legacyBackupProducts = [];
+
         if (saved) {
             try {
                 const state = JSON.parse(saved);
                 this.scanHistory = state.scanHistory || [];
                 this.soundEnabled = state.soundEnabled !== false;
-                this.backupProducts = Array.isArray(state.backupProducts) ? state.backupProducts : [];
+                legacyBackupProducts = Array.isArray(state.backupProducts) ? state.backupProducts : [];
                 this.backupCsvFileName = String(state.backupCsvFileName || '');
                 this.backupCsvSavedAt = String(state.backupCsvSavedAt || '');
-                this.backupDataAvailable = this.backupProducts.length > 0;
                 this.elements.soundToggle.checked = this.soundEnabled;
                 this.updateHistoryDisplay();
-                this.updateBackupCsvUI();
-                this.updateDataStatus();
             } catch (e) {
                 console.error('State restore error:', e);
             }
+        }
+
+        const restoredBackup = this.restoreBackupProductsState(legacyBackupProducts);
+        this.updateBackupCsvUI();
+        this.updateDataStatus();
+
+        if (restoredBackup) {
+            this.showNotification(`✓ RESTORED CSV BACKUP (${this.backupProducts.length} PRODUCTS)`, 'info');
         }
     }
 }
