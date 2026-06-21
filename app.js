@@ -33,6 +33,12 @@ class PriceChecker {
         this.scanCooldownMs = 2500;
         this.scanLockUntil = 0;
         this.isMobileDevice = /android|webos|iphone|ipad|ipod/i.test(navigator.userAgent || '');
+        this.barcodeLibraryUrls = [
+            'https://cdn.jsdelivr.net/npm/quagga@0.12.1/dist/quagga.min.js',
+            'https://unpkg.com/quagga@0.12.1/dist/quagga.min.js',
+            'https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js'
+        ];
+        this.barcodeLibraryLoadingPromise = null;
 
         // Configuration
         this.warehouseURL = 'https://www.matrixwarehouse.co.za';
@@ -80,6 +86,48 @@ class PriceChecker {
             document.body.appendChild(container);
             this.elements.notificationContainer = container;
         }
+    }
+
+    isBarcodeLibraryReady() {
+        return !!(window.Quagga && typeof window.Quagga.init === 'function');
+    }
+
+    loadScript(src) {
+        return new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = src;
+            script.async = true;
+            script.onload = () => resolve();
+            script.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+            document.head.appendChild(script);
+        });
+    }
+
+    async ensureBarcodeLibraryLoaded() {
+        if (this.isBarcodeLibraryReady()) {
+            return;
+        }
+
+        if (!this.barcodeLibraryLoadingPromise) {
+            this.barcodeLibraryLoadingPromise = (async () => {
+                for (const src of this.barcodeLibraryUrls) {
+                    try {
+                        await this.loadScript(src);
+                        if (this.isBarcodeLibraryReady()) {
+                            return;
+                        }
+                    } catch (error) {
+                        console.warn('Barcode library load failed:', error);
+                    }
+                }
+
+                throw new Error('Unable to load barcode scanner library');
+            })().finally(() => {
+                this.barcodeLibraryLoadingPromise = null;
+            });
+        }
+
+        return this.barcodeLibraryLoadingPromise;
     }
 
     attachEventListeners() {
@@ -624,6 +672,10 @@ class PriceChecker {
         const name = String(error?.name || '');
         const message = String(error?.message || '').toLowerCase();
 
+        if (message.includes('barcode scanner library') || message.includes('failed to load script')) {
+            return 'CHECK YOUR NETWORK, THEN RELOAD THE PAGE TO LOAD THE BARCODE SCANNER LIBRARY.';
+        }
+
         if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
             return 'ALLOW CAMERA ACCESS IN YOUR BROWSER, THEN TAP ACTIVATE CAMERA.';
         }
@@ -661,19 +713,19 @@ class PriceChecker {
     resetScannerSession() {
         this.scanLockUntil = 0;
 
-        if (window.Quagga) {
+        if (this.isBarcodeLibraryReady()) {
             try {
-                if (this.detectedHandler && typeof Quagga.offDetected === 'function') {
-                    Quagga.offDetected(this.detectedHandler);
+                if (this.detectedHandler && typeof window.Quagga.offDetected === 'function') {
+                    window.Quagga.offDetected(this.detectedHandler);
                 }
-                Quagga.stop();
+                window.Quagga.stop();
             } catch (error) {
                 console.warn('Quagga stop error:', error);
             }
 
             try {
-                if (Quagga.CameraAccess && typeof Quagga.CameraAccess.release === 'function') {
-                    Quagga.CameraAccess.release();
+                if (window.Quagga.CameraAccess && typeof window.Quagga.CameraAccess.release === 'function') {
+                    window.Quagga.CameraAccess.release();
                 }
             } catch (error) {
                 console.warn('Quagga camera release error:', error);
@@ -686,24 +738,27 @@ class PriceChecker {
 
     // =============== BARCODE SCANNING ===============
 
-    startBarcodeScanning() {
-        if (!window.Quagga) {
+    async startBarcodeScanning() {
+        await this.ensureBarcodeLibraryLoaded();
+
+        if (!this.isBarcodeLibraryReady()) {
             console.error('❌ Quagga library not loaded');
             this.cameraActive = false;
-            return Promise.reject(new Error('Barcode library not loaded'));
+            throw new Error('Barcode library not loaded');
         }
 
         if (!this.elements.cameraViewport) {
             console.error('❌ Scanner viewport not found');
             this.cameraActive = false;
-            return Promise.reject(new Error('Scanner viewport not found'));
+            throw new Error('Scanner viewport not found');
         }
 
         console.log('🎯 Starting Quagga barcode scanning...');
 
         return new Promise((resolve, reject) => {
             try {
-                Quagga.init({
+                const quagga = window.Quagga;
+                quagga.init({
                     inputStream: {
                         name: 'Live',
                         type: 'LiveStream',
@@ -748,7 +803,7 @@ class PriceChecker {
 
                     console.log('✓ Quagga initialized');
                     try {
-                        Quagga.start();
+                        quagga.start();
                     } catch (startError) {
                         reject(startError);
                         return;
@@ -764,13 +819,13 @@ class PriceChecker {
                     this.showNotification('✓ CAMERA ACTIVE - POINT AT CODE TO SEARCH', 'success');
                     this.prepareScannerVideo();
 
-                    if (this.detectedHandler && typeof Quagga.offDetected === 'function') {
-                        Quagga.offDetected(this.detectedHandler);
+                    if (this.detectedHandler && typeof quagga.offDetected === 'function') {
+                        quagga.offDetected(this.detectedHandler);
                     }
 
                     this.detectedHandler = (result) => this.handleDetectedCode(result);
 
-                    Quagga.onDetected(this.detectedHandler);
+                    quagga.onDetected(this.detectedHandler);
                     resolve();
                 });
             } catch (error) {
