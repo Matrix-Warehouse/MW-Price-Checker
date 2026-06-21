@@ -40,7 +40,7 @@ class PriceChecker {
             backupCsvMeta: document.getElementById('backupCsvMeta'),
             clearBackupData: document.getElementById('clearBackupData'),
             cameraToggle: document.getElementById('cameraToggle'),
-            cameraVideo: document.getElementById('cameraVideo'),
+            cameraViewport: document.getElementById('cameraViewport'),
             soundToggle: document.getElementById('soundToggle'),
             resultsContainer: document.getElementById('resultsContainer'),
             dataStatus: document.getElementById('dataStatus'),
@@ -441,24 +441,10 @@ class PriceChecker {
         this.showLoading(true);
 
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    facingMode: 'environment',
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 }
-                },
-                audio: false
-            });
-
-            console.log('✓ Camera stream acquired');
-            this.elements.cameraVideo.srcObject = stream;
-            this.cameraActive = true;
-            this.updateCameraStatus(true);
-            this.elements.cameraToggle.innerHTML = '<span class="btn-icon">⏹</span>STOP CAMERA';
-
-            this.showNotification('✓ CAMERA ACTIVE - SCANNING...', 'success');
+            if (!this.elements.cameraViewport) {
+                throw new Error('Scanner viewport not found');
+            }
             this.startBarcodeScanning();
-
         } catch (error) {
             console.error('❌ Camera Error:', error);
             this.showNotification('✗ CAMERA ACCESS DENIED: ' + error.message, 'error');
@@ -469,14 +455,6 @@ class PriceChecker {
 
     stopCamera() {
         console.log('📷 Stopping camera...');
-        
-        const stream = this.elements.cameraVideo.srcObject;
-        if (stream) {
-            stream.getTracks().forEach(track => {
-                track.stop();
-                console.log('✓ Track stopped:', track.label);
-            });
-        }
 
         if (window.Quagga) {
             try {
@@ -507,6 +485,12 @@ class PriceChecker {
             return;
         }
 
+        if (!this.elements.cameraViewport) {
+            console.error('❌ Scanner viewport not found');
+            this.showNotification('✗ SCANNER VIEWPORT NOT FOUND', 'error');
+            return;
+        }
+
         console.log('🎯 Starting Quagga barcode scanning...');
         const self = this;
 
@@ -515,7 +499,7 @@ class PriceChecker {
                 inputStream: {
                     name: "Live",
                     type: "LiveStream",
-                    target: this.elements.cameraVideo,
+                    target: this.elements.cameraViewport,
                     constraints: {
                         width: { min: 640 },
                         height: { min: 480 },
@@ -554,6 +538,10 @@ class PriceChecker {
                 console.log('✓ Quagga initialized');
                 Quagga.start();
                 console.log('✓ Quagga started');
+                self.cameraActive = true;
+                self.updateCameraStatus(true);
+                self.elements.cameraToggle.innerHTML = '<span class="btn-icon">⏹</span>STOP CAMERA';
+                self.showNotification('✓ CAMERA ACTIVE - SCANNING...', 'success');
 
                 // Barcode detection
                 Quagga.onDetected((result) => {
