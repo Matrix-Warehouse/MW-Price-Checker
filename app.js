@@ -30,6 +30,9 @@ class PriceChecker {
         this.detectedHandler = null;
         this.cameraStartInProgress = false;
         this.cameraAutoStartPending = false;
+        this.cameraStream = null;
+        this.nativeBarcodeDetector = null;
+        this.nativeScanFrameId = null;
         this.scanCooldownMs = 2500;
         this.scanLockUntil = 0;
         this.isMobileDevice = /android|webos|iphone|ipad|ipod/i.test(navigator.userAgent || '');
@@ -92,6 +95,10 @@ class PriceChecker {
         return !!(window.Quagga && typeof window.Quagga.init === 'function');
     }
 
+    isNativeBarcodeDetectionReady() {
+        return typeof window.BarcodeDetector === 'function';
+    }
+
     loadScript(src) {
         return new Promise((resolve, reject) => {
             const script = document.createElement('script');
@@ -104,7 +111,7 @@ class PriceChecker {
     }
 
     async ensureBarcodeLibraryLoaded() {
-        if (this.isBarcodeLibraryReady()) {
+        if (this.isBarcodeLibraryReady() || this.isNativeBarcodeDetectionReady()) {
             return;
         }
 
@@ -534,11 +541,6 @@ class PriceChecker {
             this.setCameraButtonState('STARTING CAMERA', '⏳', true);
             this.updateCameraStatus(false, 'STARTING CAMERA...');
             this.updateCameraHint('ALLOW CAMERA ACCESS IF YOUR BROWSER PROMPTS YOU.');
-
-            const stream = await navigator.mediaDevices.getUserMedia(this.getPreferredCameraConstraints());
-
-            stream.getTracks().forEach((track) => track.stop());
-
             await this.startBarcodeScanning();
         } catch (error) {
             this.cameraActive = false;
@@ -661,6 +663,10 @@ class PriceChecker {
             return 'Camera startup was interrupted. Please try again.';
         }
 
+        if (message.includes('barcode detection is not supported') || message.includes('unable to load barcode scanner library')) {
+            return 'Barcode scanning is not supported in this browser. Try Chrome or Edge.';
+        }
+
         if (message) {
             return message;
         }
@@ -672,8 +678,8 @@ class PriceChecker {
         const name = String(error?.name || '');
         const message = String(error?.message || '').toLowerCase();
 
-        if (message.includes('barcode scanner library') || message.includes('failed to load script')) {
-            return 'CHECK YOUR NETWORK, THEN RELOAD THE PAGE TO LOAD THE BARCODE SCANNER LIBRARY.';
+        if (message.includes('barcode detection is not supported') || message.includes('barcode scanner library') || message.includes('failed to load script')) {
+            return 'TRY CHROME OR EDGE FOR BARCODE DETECTION, OR CHECK YOUR NETWORK TO LOAD THE SCANNER LIBRARY.';
         }
 
         if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
@@ -712,6 +718,19 @@ class PriceChecker {
 
     resetScannerSession() {
         this.scanLockUntil = 0;
+        this.cameraAutoStartPending = false;
+
+        if (this.nativeScanFrameId) {
+            window.cancelAnimationFrame(this.nativeScanFrameId);
+            this.nativeScanFrameId = null;
+        }
+
+        if (this.cameraStream) {
+            this.cameraStream.getTracks().forEach((track) => track.stop());
+            this.cameraStream = null;
+        }
+
+        this.nativeBarcodeDetector = null;
 
         if (this.isBarcodeLibraryReady()) {
             try {
@@ -742,9 +761,13 @@ class PriceChecker {
         await this.ensureBarcodeLibraryLoaded();
 
         if (!this.isBarcodeLibraryReady()) {
-            console.error('❌ Quagga library not loaded');
+            if (this.isNativeBarcodeDetectionReady()) {
+                return this.startNativeBarcodeScanning();
+            }
+
+            console.error('❌ Barcode detection is not available');
             this.cameraActive = false;
-            throw new Error('Barcode library not loaded');
+            throw new Error('Barcode detection is not supported in this browser');
         }
 
         if (!this.elements.cameraViewport) {
@@ -833,6 +856,81 @@ class PriceChecker {
                 reject(error);
             }
         });
+    }
+
+    async startNativeBarcodeScanning() {
+        if (!this.elements.cameraViewport) {
+            console.error('❌ Scanner viewport not found');
+            this.cameraActive = false;
+            throw new Error('Scanner viewport not found');
+        }
+
+        const BarcodeDetectorClass = window.BarcodeDetector;
+        if (typeof BarcodeDetectorClass !== 'function') {
+            this.cameraActive = false;
+            throw new Error('Barcode detection is not supported in this browser');
+        }
+
+        console.log('🎯 Starting native barcode detection...');
+
+        const stream = await navigator.mediaDevices.getUserMedia(this.getPreferredCameraConstraints());
+        this.cameraStream = stream;
+
+        this.clearCameraViewport();
+
+        const video = document.createElement('video');
+        video.autoplay = true;
+        video.muted = true;
+        video.playsInline = true;
+        video.setAttribute('autoplay', 'true');
+        video.setAttribute('muted', 'true');
+        video.setAttribute('playsinline', 'true');
+        video.setAttribute('webkit-playsinline', 'true');
+        video.srcObject = stream;
+        this.elements.cameraViewport.appendChild(video);
+
+        try {
+            await video.play();
+        } catch (error) {
+            console.warn('Native scanner video play warning:', error);
+        }
+
+        try {
+            this.nativeBarcodeDetector = new BarcodeDetectorClass();
+        } catch (error) {
+            console.error('❌ Native barcode detector init error:', error);
+            throw new Error('Barcode detection is not supported in this browser');
+        }
+
+        this.cameraActive = true;
+        this.cameraAutoStartPending = false;
+        this.lastScan = '';
+        this.lastScanTime = 0;
+        this.updateCameraStatus(true, 'CAMERA ACTIVE - SCANNING');
+        this.updateCameraHint('POINT CAMERA AT A BARCODE OR A SKU/ITEM CODE PRINTED AS A BARCODE.');
+        this.setCameraButtonState('STOP CAMERA', '⏹');
+        this.showNotification('✓ CAMERA ACTIVE - POINT AT CODE TO SEARCH', 'success');
+
+        const scanFrame = async () => {
+            if (!this.cameraActive || !this.nativeBarcodeDetector || !video.srcObject) {
+                this.nativeScanFrameId = null;
+                return;
+            }
+
+            try {
+                const barcodes = await this.nativeBarcodeDetector.detect(video);
+                const code = String(barcodes?.[0]?.rawValue || barcodes?.[0]?.displayValue || '').trim();
+                if (code) {
+                    this.handleDetectedCode({ codeResult: { code } });
+                }
+            } catch (error) {
+                console.warn('Native barcode detection error:', error);
+            }
+
+            this.nativeScanFrameId = window.requestAnimationFrame(scanFrame);
+        };
+
+        this.nativeScanFrameId = window.requestAnimationFrame(scanFrame);
     }
 
     prepareScannerVideo(attempt = 0) {
