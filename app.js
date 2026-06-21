@@ -61,6 +61,7 @@ class PriceChecker {
         this.attachEventListeners();
         await this.restoreState();
         await this.loadProducts();
+        await this.startCamera();
         console.log('✓ Initialization complete');
     }
 
@@ -444,8 +445,10 @@ class PriceChecker {
             if (!this.elements.cameraViewport) {
                 throw new Error('Scanner viewport not found');
             }
+            this.cameraActive = true;
             this.startBarcodeScanning();
         } catch (error) {
+            this.cameraActive = false;
             console.error('❌ Camera Error:', error);
             this.showNotification('✗ CAMERA ACCESS DENIED: ' + error.message, 'error');
         }
@@ -481,12 +484,14 @@ class PriceChecker {
 
         if (!window.Quagga) {
             console.error('❌ Quagga library not loaded');
+            this.cameraActive = false;
             this.showNotification('✗ BARCODE LIBRARY NOT LOADED', 'error');
             return;
         }
 
         if (!this.elements.cameraViewport) {
             console.error('❌ Scanner viewport not found');
+            this.cameraActive = false;
             this.showNotification('✗ SCANNER VIEWPORT NOT FOUND', 'error');
             return;
         }
@@ -531,6 +536,9 @@ class PriceChecker {
             }, function(err) {
                 if (err) {
                     console.error('❌ Quagga init error:', err);
+                    self.cameraActive = false;
+                    self.updateCameraStatus(false);
+                    self.elements.cameraToggle.innerHTML = '<span class="btn-icon">▶</span>ACTIVATE CAMERA';
                     self.showNotification('✗ SCAN ERROR: ' + err.message, 'error');
                     return;
                 }
