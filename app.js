@@ -32,6 +32,7 @@ class PriceChecker {
         this.cameraAutoStartPending = false;
         this.cameraStream = null;
         this.nativeBarcodeDetector = null;
+        this.textDetector = null;
         this.nativeScanFrameId = null;
         this.scanCooldownMs = 2500;
         this.scanLockUntil = 0;
@@ -100,6 +101,10 @@ class PriceChecker {
         return typeof window.BarcodeDetector === 'function';
     }
 
+    isNativeTextDetectionReady() {
+        return typeof window.TextDetector === 'function';
+    }
+
     loadScript(src) {
         return new Promise((resolve, reject) => {
             const script = document.createElement('script');
@@ -112,7 +117,7 @@ class PriceChecker {
     }
 
     async ensureBarcodeLibraryLoaded() {
-        if (this.isBarcodeLibraryReady() || this.isNativeBarcodeDetectionReady()) {
+        if (this.isBarcodeLibraryReady() || this.isNativeBarcodeDetectionReady() || this.isNativeTextDetectionReady()) {
             return;
         }
 
@@ -732,6 +737,7 @@ class PriceChecker {
         }
 
         this.nativeBarcodeDetector = null;
+        this.textDetector = null;
 
         if (this.isBarcodeLibraryReady()) {
             try {
@@ -759,13 +765,13 @@ class PriceChecker {
     // =============== BARCODE SCANNING ===============
 
     async startBarcodeScanning() {
+        if (this.isNativeBarcodeDetectionReady() || this.isNativeTextDetectionReady()) {
+            return this.startNativeBarcodeScanning();
+        }
+
         await this.ensureBarcodeLibraryLoaded();
 
         if (!this.isBarcodeLibraryReady()) {
-            if (this.isNativeBarcodeDetectionReady()) {
-                return this.startNativeBarcodeScanning();
-            }
-
             console.error('❌ Barcode detection is not available');
             this.cameraActive = false;
             throw new Error('Barcode detection is not supported in this browser');
@@ -838,7 +844,7 @@ class PriceChecker {
                     this.lastScan = '';
                     this.lastScanTime = 0;
                     this.updateCameraStatus(true, 'CAMERA ACTIVE - SCANNING');
-                    this.updateCameraHint('POINT CAMERA AT A BARCODE OR A SKU/ITEM CODE PRINTED AS A BARCODE.');
+                    this.updateCameraHint('POINT CAMERA AT A BARCODE, SKU, OR ITEM NUMBER.');
                     this.setCameraButtonState('STOP CAMERA', '⏹');
                     this.showNotification('✓ CAMERA ACTIVE - POINT AT CODE TO SEARCH', 'success');
                     this.prepareScannerVideo();
@@ -867,7 +873,8 @@ class PriceChecker {
         }
 
         const BarcodeDetectorClass = window.BarcodeDetector;
-        if (typeof BarcodeDetectorClass !== 'function') {
+        const TextDetectorClass = window.TextDetector;
+        if (typeof BarcodeDetectorClass !== 'function' && typeof TextDetectorClass !== 'function') {
             this.cameraActive = false;
             throw new Error('Barcode detection is not supported in this browser');
         }
@@ -897,7 +904,12 @@ class PriceChecker {
         }
 
         try {
-            this.nativeBarcodeDetector = new BarcodeDetectorClass();
+            if (typeof BarcodeDetectorClass === 'function') {
+                this.nativeBarcodeDetector = new BarcodeDetectorClass();
+            }
+            if (typeof TextDetectorClass === 'function') {
+                this.textDetector = new TextDetectorClass();
+            }
         } catch (error) {
             console.error('❌ Native barcode detector init error:', error);
             throw new Error('Barcode detection is not supported in this browser');
@@ -908,19 +920,29 @@ class PriceChecker {
         this.lastScan = '';
         this.lastScanTime = 0;
         this.updateCameraStatus(true, 'CAMERA ACTIVE - SCANNING');
-        this.updateCameraHint('POINT CAMERA AT A BARCODE OR A SKU/ITEM CODE PRINTED AS A BARCODE.');
+        this.updateCameraHint('POINT CAMERA AT A BARCODE, SKU, OR ITEM NUMBER.');
         this.setCameraButtonState('STOP CAMERA', '⏹');
         this.showNotification('✓ CAMERA ACTIVE - POINT AT CODE TO SEARCH', 'success');
 
         const scanFrame = async () => {
-            if (!this.cameraActive || !this.nativeBarcodeDetector || !video.srcObject) {
+            if (!this.cameraActive || (!this.nativeBarcodeDetector && !this.textDetector) || !video.srcObject) {
                 this.nativeScanFrameId = null;
                 return;
             }
 
             try {
-                const barcodes = await this.nativeBarcodeDetector.detect(video);
-                const code = String(barcodes?.[0]?.rawValue || barcodes?.[0]?.displayValue || '').trim();
+                let code = '';
+
+                if (this.nativeBarcodeDetector) {
+                    const barcodes = await this.nativeBarcodeDetector.detect(video);
+                    code = this.extractDetectedBarcode(barcodes);
+                }
+
+                if (!code && this.textDetector) {
+                    const textDetections = await this.textDetector.detect(video);
+                    code = this.extractDetectedTextCode(textDetections);
+                }
+
                 if (code) {
                     this.handleDetectedCode({ codeResult: { code } });
                 }
@@ -932,6 +954,41 @@ class PriceChecker {
         };
 
         this.nativeScanFrameId = window.requestAnimationFrame(scanFrame);
+    }
+
+    extractDetectedBarcode(barcodes) {
+        return String(barcodes?.[0]?.rawValue || barcodes?.[0]?.displayValue || '').trim();
+    }
+
+    extractDetectedTextCode(detections) {
+        const candidates = Array.isArray(detections) ? detections : [];
+
+        for (const detection of candidates) {
+            const rawText = String(detection?.rawValue || detection?.text || '').trim();
+            if (!rawText) continue;
+
+            const lines = rawText
+                .split(/\r?\n+/)
+                .map((line) => line.trim())
+                .filter(Boolean);
+
+            for (const line of lines) {
+                const labelMatch = line.match(/\b(?:sku|item(?:\s*(?:no\.?|number|#))?|barcode)\b[:\s-]*([a-z0-9][a-z0-9._/-]{2,})/i);
+                if (labelMatch) {
+                    return labelMatch[1].trim();
+                }
+
+                const tokens = line.split(/\s+/);
+                for (const token of tokens) {
+                    const cleaned = this.normalizeCodeValue(token);
+                    if (cleaned.length >= 4 && cleaned.length <= 32 && /\d/.test(cleaned)) {
+                        return token.trim();
+                    }
+                }
+            }
+        }
+
+        return '';
     }
 
     prepareScannerVideo(attempt = 0) {
@@ -976,6 +1033,9 @@ class PriceChecker {
         }
 
         console.log('📊 BARCODE DETECTED:', barcode);
+        if (this.elements.quickSearch) {
+            this.elements.quickSearch.value = barcode;
+        }
         this.lastScan = normalizedCode;
         this.lastScanTime = now;
         this.scanLockUntil = now + this.scanCooldownMs;
