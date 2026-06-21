@@ -1,6 +1,6 @@
 /* ============================================
    MW-PRICE-CHECKER APPLICATION LOGIC
-   Live Product Lookup from MatrixWarehouse
+   Live Product Lookup from MatrixWarehouse Website
    ============================================ */
 
 class PriceChecker {
@@ -13,9 +13,10 @@ class PriceChecker {
         this.lastScan = '';
         this.lastScanTime = 0;
         this.isScanning = false;
+        this.products = []; // Cache of all products
 
         // API Configuration
-        this.warehouseAPI = 'https://www.matrixwarehouse.co.za';
+        this.warehouseURL = 'https://www.matrixwarehouse.co.za';
         this.productCache = new Map();
 
         // DOM Elements
@@ -44,7 +45,7 @@ class PriceChecker {
         this.createNotificationContainer();
         this.attachEventListeners();
         this.restoreState();
-        this.updateDataStatus(true);
+        this.loadProducts();
     }
 
     createNotificationContainer() {
@@ -76,6 +77,59 @@ class PriceChecker {
         // History & Data
         this.elements.clearHistory.addEventListener('click', () => this.clearScanHistory());
         this.elements.clearData.addEventListener('click', () => this.clearCache());
+    }
+
+    // =============== LOAD PRODUCTS FROM SHOPIFY JSON ===============
+
+    async loadProducts() {
+        this.showLoading(true);
+        try {
+            const response = await fetch(`${this.warehouseURL}/products.json`, {
+                mode: 'cors',
+                headers: {
+                    'Accept': 'application/json'
+                }
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                this.products = data.products || [];
+                this.updateDataStatus(true);
+                this.showNotification(`✓ LOADED ${this.products.length} PRODUCTS`, 'success');
+                console.log('Loaded products:', this.products.length);
+            } else {
+                this.loadProductsViaSearch();
+            }
+        } catch (error) {
+            console.error('Products.json error:', error);
+            this.loadProductsViaSearch();
+        }
+        this.showLoading(false);
+    }
+
+    async loadProductsViaSearch() {
+        try {
+            // Try to load products via search endpoint or collection
+            const response = await fetch(`${this.warehouseURL}/collections/all/products.json`, {
+                mode: 'cors',
+                headers: {
+                    'Accept': 'application/json'
+                }
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                this.products = data.products || [];
+                this.updateDataStatus(true);
+                this.showNotification(`✓ LOADED ${this.products.length} PRODUCTS`, 'success');
+            } else {
+                this.updateDataStatus(false);
+                this.showNotification('⚠ OFFLINE MODE - Limited Functionality', 'info');
+            }
+        } catch (error) {
+            console.error('Search error:', error);
+            this.updateDataStatus(false);
+        }
     }
 
     // =============== QUICK SEARCH ===============
@@ -119,7 +173,7 @@ class PriceChecker {
             this.elements.cameraToggle.innerHTML = '<span class="btn-icon">⏹</span>STOP CAMERA';
 
             this.showLoading(false);
-            this.showNotification('✓ CAMERA ACTIVATED', 'success');
+            this.showNotification('✓ CAMERA ACTIVATED - SCANNING...', 'success');
 
             // Start barcode scanning
             this.startBarcodeScanning();
@@ -135,6 +189,12 @@ class PriceChecker {
         if (stream) {
             stream.getTracks().forEach(track => track.stop());
         }
+        
+        // Stop Quagga
+        if (window.Quagga) {
+            Quagga.stop();
+        }
+        
         this.cameraActive = false;
         this.isScanning = false;
         this.updateCameraStatus(false);
@@ -145,13 +205,15 @@ class PriceChecker {
     // =============== BARCODE SCANNING WITH QUAGGA ===============
 
     startBarcodeScanning() {
-        if (!this.cameraActive) return;
+        if (!this.cameraActive || !window.Quagga) {
+            console.warn('Quagga not available');
+            return;
+        }
 
         this.isScanning = true;
         const self = this;
-        let frameCount = 0;
 
-        // Initialize Quagga with camera constraints
+        // Initialize Quagga
         Quagga.init({
             inputStream: {
                 name: "Live",
@@ -197,11 +259,11 @@ class PriceChecker {
 
             // Handle detected barcodes
             Quagga.onDetected((result) => {
-                if (result.codeResult) {
+                if (result.codeResult && result.codeResult.code) {
                     const code = result.codeResult.code;
                     
                     // Prevent rapid duplicate scans
-                    if (code !== self.lastScan || Date.now() - self.lastScanTime > 2000) {
+                    if (code !== self.lastScan || Date.now() - self.lastScanTime > 3000) {
                         self.lastScan = code;
                         self.lastScanTime = Date.now();
                         
@@ -216,7 +278,7 @@ class PriceChecker {
     // =============== PRODUCT LOOKUP ===============
 
     lookupProduct(barcode, fromCamera = false) {
-        // Prevent duplicate scans within 2 seconds
+        // Prevent duplicate scans
         const now = Date.now();
         if (
             barcode === this.lastScan &&
@@ -232,119 +294,91 @@ class PriceChecker {
         if (this.productCache.has(barcode)) {
             const product = this.productCache.get(barcode);
             this.displayProduct(product);
-            this.addToHistory(barcode, product.product_name);
+            this.addToHistory(barcode, product.title);
             if (fromCamera) this.playBeep();
             return;
         }
 
-        // Fetch from MatrixWarehouse API
-        this.showLoading(true);
-        this.fetchProductFromWarehouse(barcode)
-            .then(product => {
-                this.showLoading(false);
-                if (product) {
-                    this.productCache.set(barcode, product);
-                    this.displayProduct(product);
-                    this.addToHistory(barcode, product.product_name);
-                    if (fromCamera) this.playBeep();
-                } else {
-                    this.displayNotFound(barcode);
-                }
-            })
-            .catch(error => {
-                this.showLoading(false);
-                console.error('Lookup Error:', error);
-                this.displayNotFound(barcode);
-            });
+        // Search in local products
+        const product = this.searchLocalProducts(barcode);
+        
+        if (product) {
+            this.productCache.set(barcode, product);
+            this.displayProduct(product);
+            this.addToHistory(barcode, product.title);
+            if (fromCamera) this.playBeep();
+        } else {
+            this.displayNotFound(barcode);
+            if (fromCamera) this.playError();
+        }
     }
 
-    async fetchProductFromWarehouse(barcode) {
-        try {
-            // Try multiple search endpoints
-            const searchMethods = [
-                `${this.warehouseAPI}/api/products/search?sku=${encodeURIComponent(barcode)}`,
-                `${this.warehouseAPI}/api/products/barcode/${encodeURIComponent(barcode)}`,
-                `${this.warehouseAPI}/search?q=${encodeURIComponent(barcode)}`,
-                `${this.warehouseAPI}/api/v1/products/${encodeURIComponent(barcode)}`
-            ];
-
-            for (const url of searchMethods) {
-                try {
-                    const response = await fetch(url, {
-                        method: 'GET',
-                        headers: {
-                            'Accept': 'application/json'
-                        },
-                        mode: 'cors'
-                    });
-
-                    if (response.ok) {
-                        const data = await response.json();
-                        const product = this.parseProductData(data);
-                        
-                        if (product && product.product_name) {
-                            return product;
-                        }
+    searchLocalProducts(searchTerm) {
+        const term = searchTerm.toLowerCase().trim();
+        
+        // Search in products array
+        for (const product of this.products) {
+            // Check barcode/SKU
+            if (product.barcode && product.barcode.toLowerCase() === term) {
+                return this.parseShopifyProduct(product);
+            }
+            
+            // Check product handle (URL slug)
+            if (product.handle && product.handle.toLowerCase().includes(term)) {
+                return this.parseShopifyProduct(product);
+            }
+            
+            // Check product title
+            if (product.title && product.title.toLowerCase().includes(term)) {
+                return this.parseShopifyProduct(product);
+            }
+            
+            // Check variant SKU
+            if (product.variants) {
+                for (const variant of product.variants) {
+                    if (variant.sku && variant.sku.toLowerCase() === term) {
+                        return this.parseShopifyProduct(product, variant);
                     }
-                } catch (e) {
-                    console.warn(`Endpoint failed: ${url}`);
-                    continue;
                 }
             }
-
-            return null;
-        } catch (error) {
-            console.error('API Error:', error);
-            return null;
         }
+        
+        return null;
     }
 
-    parseProductData(data) {
-        // Handle array responses
-        let product = Array.isArray(data) ? data[0] : data;
-
-        // Unwrap nested responses
-        if (product.product) {
-            product = product.product;
-        } else if (product.data) {
-            product = product.data;
-        } else if (product.results && Array.isArray(product.results)) {
-            product = product.results[0];
-        }
-
+    parseShopifyProduct(product, variant = null) {
+        const selectedVariant = variant || (product.variants && product.variants[0]) || {};
+        
         return {
-            barcode: product.sku || product.barcode || product.item_number || product.code || '',
-            product_name: product.name || product.product_name || product.title || product.description || 'Unknown Product',
-            price: this.formatPrice(product.price || product.selling_price || product.cost || '0.00'),
-            stock: String(product.stock || product.quantity || product.qty || product.available || 'N/A'),
-            category: product.category || product.product_category || product.type || 'General',
-            description: product.description || product.details || ''
+            id: product.id,
+            title: product.title,
+            barcode: selectedVariant.barcode || product.barcode || '',
+            price: selectedVariant.price || '0.00',
+            stock: selectedVariant.inventory_quantity || 'N/A',
+            category: product.product_type || 'General',
+            image: product.featured_image?.src || product.image?.src || '',
+            description: product.body_html || '',
+            url: `${this.warehouseURL}/products/${product.handle}`
         };
     }
 
-    formatPrice(price) {
-        if (typeof price === 'string') {
-            const cleaned = price.replace(/[R$€£¥,\s]/g, '').trim();
-            const parsed = parseFloat(cleaned);
-            return isNaN(parsed) ? '0.00' : parsed.toFixed(2);
-        }
-        return parseFloat(price || 0).toFixed(2);
-    }
-
     displayProduct(product) {
+        const imageHTML = product.image ? `<img src="${product.image}" alt="${product.title}" style="max-width: 100%; height: auto; margin-bottom: 15px; border-radius: 4px;">` : '';
+        
         const resultHTML = `
             <div class="product-result">
+                ${imageHTML}
                 <div class="result-field">
                     <span class="result-label">BARCODE/SKU:</span>
                     <span class="result-value">${product.barcode || 'N/A'}</span>
                 </div>
                 <div class="result-field">
                     <span class="result-label">PRODUCT:</span>
-                    <span class="result-value">${product.product_name}</span>
+                    <span class="result-value">${product.title}</span>
                 </div>
                 <div class="result-field">
                     <span class="result-label">PRICE:</span>
-                    <span class="result-value price">R${product.price}</span>
+                    <span class="result-value price">R${parseFloat(product.price).toFixed(2)}</span>
                 </div>
                 <div class="result-field">
                     <span class="result-label">STOCK:</span>
@@ -354,10 +388,9 @@ class PriceChecker {
                     <span class="result-label">CATEGORY:</span>
                     <span class="result-value">${product.category}</span>
                 </div>
-                ${product.description ? `<div class="result-field">
-                    <span class="result-label">DETAILS:</span>
-                    <span class="result-value">${product.description}</span>
-                </div>` : ''}
+                <div style="margin-top: 15px;">
+                    <a href="${product.url}" target="_blank" class="btn btn-primary" style="display: inline-block; text-decoration: none;">VIEW ON WEBSITE</a>
+                </div>
             </div>
         `;
 
@@ -376,9 +409,10 @@ class PriceChecker {
                     <span class="result-value error">⚠ NOT FOUND</span>
                 </div>
                 <div style="margin-top: 10px; font-size: 0.85rem; color: var(--text-secondary);">
-                    • Product not found on matrixwarehouse.co.za<br>
+                    • Product not found in database<br>
                     • Verify barcode/SKU is correct<br>
-                    • Try manual search above
+                    • Try manual search or visit website<br>
+                    <a href="${this.warehouseURL}" target="_blank" style="color: var(--primary-red); text-decoration: underline;">Go to Matrix Warehouse →</a>
                 </div>
             </div>
         `;
@@ -406,17 +440,17 @@ class PriceChecker {
             return;
         }
 
-        const historyHTML = this.scanHistory.map((item, index) => `
-            <div class="history-item" data-index="${index}">
+        const historyHTML = this.scanHistory.map((item) => `
+            <div class="history-item" style="cursor: pointer;">
                 <div class="history-barcode">${item.barcode}</div>
-                <div style="color: var(--text-secondary); margin: 3px 0;">${item.productName}</div>
+                <div style="color: var(--text-secondary); margin: 3px 0; font-size: 0.8rem;">${item.productName}</div>
                 <div class="history-time">${item.timestamp}</div>
             </div>
         `).join('');
 
         this.elements.scanHistory.innerHTML = historyHTML;
 
-        // Add click handlers to history items
+        // Add click handlers
         document.querySelectorAll('.history-item').forEach(item => {
             item.addEventListener('click', () => {
                 const barcode = item.querySelector('.history-barcode').textContent;
@@ -522,6 +556,30 @@ class PriceChecker {
         }
     }
 
+    playError() {
+        if (!this.soundEnabled) return;
+
+        try {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+
+            oscillator.frequency.value = 400;
+            oscillator.type = 'sine';
+
+            gainNode.gain.setValueAtTime(0.2, audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
+
+            oscillator.start(audioContext.currentTime);
+            oscillator.stop(audioContext.currentTime + 0.2);
+        } catch (e) {
+            console.warn('Audio not available');
+        }
+    }
+
     // =============== STATE MANAGEMENT ===============
 
     saveState() {
@@ -551,5 +609,11 @@ class PriceChecker {
 
 // Initialize app when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
-    window.priceChecker = new PriceChecker();
+    // Load Quagga library
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/quagga@0.3.2/dist/quagga.min.js';
+    script.onload = () => {
+        window.priceChecker = new PriceChecker();
+    };
+    document.head.appendChild(script);
 });
