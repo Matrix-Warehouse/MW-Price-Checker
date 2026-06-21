@@ -26,6 +26,7 @@ class PriceChecker {
             backupProducts: 'priceCheckerBackupProducts'
         };
         this.productCache = new Map();
+        this.db = null;
 
         // Configuration
         this.warehouseURL = 'https://www.matrixwarehouse.co.za';
@@ -121,27 +122,42 @@ class PriceChecker {
         this.showLoading(true);
 
         try {
-            // Try products.json endpoint
-            console.log('🌐 Trying:', `${this.warehouseURL}/products.json`);
-            const response = await fetch(`${this.warehouseURL}/products.json`, {
-                method: 'GET',
-                headers: { 'Accept': 'application/json' },
-                mode: 'cors'
-            });
+            let allProducts = [];
+            let page = 1;
+            const limit = 250;
 
-            if (response.ok) {
+            while (true) {
+                const url = `${this.warehouseURL}/products.json?limit=${limit}&page=${page}`;
+                console.log(`🌐 Fetching page ${page}:`, url);
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' },
+                    mode: 'cors'
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Status ${response.status}`);
+                }
+
                 const data = await response.json();
-                this.products = data.products || [];
-                this.liveDataAvailable = this.products.length > 0;
-                console.log(`✓ Loaded ${this.products.length} products`);
-                this.updateDataStatus();
-                const backupSummary = this.backupDataAvailable
-                    ? ` + ${this.backupProducts.length} CSV BACKUP PRODUCTS`
-                    : '';
-                this.showNotification(`✓ LOADED ${this.products.length} LIVE PRODUCTS${backupSummary}`, 'success');
-            } else {
-                throw new Error(`Status ${response.status}`);
+                const pageProducts = data.products || [];
+                allProducts = allProducts.concat(pageProducts);
+
+                // Stop when we get fewer than a full page or hit a safety limit
+                if (pageProducts.length < limit || page >= 50) {
+                    break;
+                }
+                page++;
             }
+
+            this.products = allProducts;
+            this.liveDataAvailable = this.products.length > 0;
+            console.log(`✓ Loaded ${this.products.length} live products`);
+            this.updateDataStatus();
+            const backupSummary = this.backupDataAvailable
+                ? ` + ${this.backupProducts.length} CSV BACKUP PRODUCTS`
+                : '';
+            this.showNotification(`✓ LOADED ${this.products.length} LIVE PRODUCTS${backupSummary}`, 'success');
         } catch (error) {
             console.error('❌ API Error:', error);
             this.products = [];
@@ -204,6 +220,52 @@ class PriceChecker {
         }
 
         this.showNotification('ℹ CSV BACKUP PERSISTS - UPLOAD A NEW CSV TO REPLACE IT', 'info');
+    }
+
+    // =============== INDEXED DB ===============
+
+    openDB() {
+        return new Promise((resolve, reject) => {
+            if (this.db) {
+                resolve(this.db);
+                return;
+            }
+            const request = indexedDB.open('priceCheckerDB', 1);
+            request.onupgradeneeded = (event) => {
+                const db = event.target.result;
+                if (!db.objectStoreNames.contains('backupData')) {
+                    db.createObjectStore('backupData');
+                }
+            };
+            request.onsuccess = (event) => {
+                this.db = event.target.result;
+                resolve(this.db);
+            };
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    saveToIndexedDB(products) {
+        return this.openDB().then((db) => new Promise((resolve, reject) => {
+            const tx = db.transaction('backupData', 'readwrite');
+            const store = tx.objectStore('backupData');
+            store.put(products, 'backupProducts');
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+        }));
+    }
+
+    loadFromIndexedDB() {
+        return this.openDB().then((db) => new Promise((resolve, reject) => {
+            const tx = db.transaction('backupData', 'readonly');
+            const store = tx.objectStore('backupData');
+            const request = store.get('backupProducts');
+            request.onsuccess = () => resolve(Array.isArray(request.result) ? request.result : []);
+            request.onerror = () => reject(request.error);
+        })).catch((error) => {
+            console.error('IndexedDB load error:', error);
+            return [];
+        });
     }
 
     readFileAsText(file) {
@@ -976,17 +1038,21 @@ class PriceChecker {
     }
 
     saveBackupProductsState() {
+        // Primary: IndexedDB (no storage quota issues for large datasets)
+        this.saveToIndexedDB(this.backupProducts).catch((error) => {
+            console.error('IndexedDB backup save error:', error);
+            if (!this.backupPersistenceWarningShown) {
+                this.backupPersistenceWarningShown = true;
+                this.showNotification('⚠ STORAGE ERROR - CSV BACKUP MAY NOT PERSIST ON REFRESH', 'info');
+            }
+        });
+
+        // Secondary: localStorage as fallback (best effort — may fail for large datasets)
         try {
             localStorage.setItem(this.storageKeys.backupProducts, JSON.stringify(this.backupProducts));
         } catch (error) {
-            console.error('Backup state save error:', error);
-            if (
-                !this.backupPersistenceWarningShown &&
-                String(error?.name || '').toLowerCase().includes('quota')
-            ) {
-                this.backupPersistenceWarningShown = true;
-                this.showNotification('⚠ STORAGE FULL - CSV BACKUP CANNOT BE SAVED FOR PAGE REFRESH', 'info');
-            }
+            // localStorage quota exceeded is expected for large CSVs; IndexedDB is the primary store
+            console.warn('localStorage backup save failed:', error.name);
         }
     }
 
@@ -1033,13 +1099,29 @@ class PriceChecker {
             }
         }
 
-        const restoredBackup = this.restoreBackupProductsState(legacyBackupProducts);
+        const restoredFromStorage = this.restoreBackupProductsState(legacyBackupProducts);
         this.updateBackupCsvUI();
         this.updateDataStatus();
 
-        if (restoredBackup) {
+        if (restoredFromStorage) {
             this.showNotification(`✓ RESTORED ${this.backupProducts.length} CSV BACKUP PRODUCTS`, 'info');
         }
+
+        // Additionally load from IndexedDB (primary store for large datasets)
+        this.loadFromIndexedDB().then((idbProducts) => {
+            if (idbProducts.length > 0 && idbProducts.length > this.backupProducts.length) {
+                this.backupProducts = idbProducts;
+                this.backupDataAvailable = true;
+                this.productCache.clear();
+                this.updateBackupCsvUI();
+                this.updateDataStatus();
+                if (!restoredFromStorage) {
+                    this.showNotification(`✓ RESTORED ${this.backupProducts.length} CSV BACKUP PRODUCTS`, 'info');
+                }
+            }
+        }).catch((error) => {
+            console.error('IndexedDB restore error:', error);
+        });
     }
 }
 
